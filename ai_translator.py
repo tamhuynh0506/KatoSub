@@ -1,6 +1,16 @@
 import re
 import time
+import json
 from deep_translator import GoogleTranslator
+try:
+    import config
+except ImportError:
+    config = None
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 # Language name -> Google Translate language code
 LANG_MAP = {
@@ -10,9 +20,22 @@ LANG_MAP = {
 }
 
 class AITranslator:
-    def __init__(self):
-        """Google Translate powered translator. No API key or GPU needed."""
-        print("DEBUG: Initializing Google Translate (Unlimited, Free)")
+    def __init__(self, model="google"):
+        """Translator supporting Google Translate and ChatGPT."""
+        self.model = model
+        if self.model == "chatgpt":
+            if not OpenAI:
+                print("DEBUG: OpenAI library not installed. Falling back to Google.")
+                self.model = "google"
+            elif not config or not hasattr(config, "OPENAI_API_KEY") or not config.OPENAI_API_KEY:
+                print("DEBUG: OPENAI_API_KEY not found in config. Falling back to Google.")
+                self.model = "google"
+            else:
+                print("DEBUG: Initializing ChatGPT Translator")
+                self.client = OpenAI(api_key=config.OPENAI_API_KEY)
+        
+        if self.model == "google":
+            print("DEBUG: Initializing Google Translate (Unlimited, Free)")
 
     def _translate_with_retry(self, text, src, tgt, max_retries=5):
         """Translate a single text with retries and exponential backoff."""
@@ -29,6 +52,36 @@ class AITranslator:
                     time.sleep(wait)
                 else:
                     print(f"DEBUG: Translation failed after {max_retries} retries: {err[:80]}")
+        return None
+
+    def _translate_batch_chatgpt(self, texts, target_lang):
+        prompt = f"Translate the following JSON array of subtitle texts to {target_lang}. Return ONLY a valid JSON array of strings containing the translations in the exact same order. Do not include any explanations, markdown formatting like ```json, or other text.\n\n"
+        prompt += json.dumps(texts, ensure_ascii=False)
+        
+        for attempt in range(3):
+            try:
+                response = self.client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are a professional subtitle translator. You ONLY return a JSON array string."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3
+                )
+                content = response.choices[0].message.content.strip()
+                if content.startswith("```json"):
+                    content = content[7:-3].strip()
+                elif content.startswith("```"):
+                    content = content[3:-3].strip()
+                
+                result = json.loads(content)
+                if isinstance(result, list) and len(result) == len(texts):
+                    return result
+                else:
+                    print(f"DEBUG: ChatGPT length mismatch ({len(result)} vs {len(texts)}), retrying...")
+            except Exception as e:
+                print(f"DEBUG: ChatGPT translation error on attempt {attempt+1}: {e}")
+                time.sleep(1)
         return None
 
     def translate_srt_content(self, srt_content, target_lang):
@@ -70,39 +123,50 @@ class AITranslator:
 
         # Translate in small batches using newline as separator
         # Google Translate preserves newlines reliably
-        BATCH_SIZE = 10
+        BATCH_SIZE = 30 if self.model == "chatgpt" else 10
         translated_texts = []
         
         for batch_start in range(0, total, BATCH_SIZE):
             batch_end = min(batch_start + BATCH_SIZE, total)
             batch = texts[batch_start:batch_end]
             
-            # Join with newlines - Google Translate preserves these
-            joined = "\n".join(batch)
-            
-            result = self._translate_with_retry(joined, 'auto', tgt_code)
-            
-            if result:
-                parts = result.split("\n")
-                # Clean empty parts that might come from extra newlines
-                parts = [p.strip() for p in parts if p.strip()]
-                
-                if len(parts) == len(batch):
+            if self.model == "chatgpt":
+                parts = self._translate_batch_chatgpt(batch, target_lang)
+                if parts:
                     translated_texts.extend(parts)
                 else:
-                    # Newline split didn't match - translate individually
-                    print(f"DEBUG: Batch {batch_start}-{batch_end} split mismatch ({len(parts)} vs {len(batch)}), translating individually")
+                    print(f"DEBUG: Batch {batch_start}-{batch_end} failed with ChatGPT, falling back to Google individually")
                     for text in batch:
                         individual = self._translate_with_retry(text, 'auto', tgt_code)
                         translated_texts.append(individual if individual else text)
                         time.sleep(1.0)
             else:
-                # Batch failed entirely - translate individually
-                print(f"DEBUG: Batch {batch_start}-{batch_end} failed, translating individually")
-                for text in batch:
-                    individual = self._translate_with_retry(text, 'auto', tgt_code)
-                    translated_texts.append(individual if individual else text)
-                    time.sleep(1.0)
+                # Join with newlines - Google Translate preserves these
+                joined = "\n".join(batch)
+                
+                result = self._translate_with_retry(joined, 'auto', tgt_code)
+                
+                if result:
+                    parts = result.split("\n")
+                    # Clean empty parts that might come from extra newlines
+                    parts = [p.strip() for p in parts if p.strip()]
+                    
+                    if len(parts) == len(batch):
+                        translated_texts.extend(parts)
+                    else:
+                        # Newline split didn't match - translate individually
+                        print(f"DEBUG: Batch {batch_start}-{batch_end} split mismatch ({len(parts)} vs {len(batch)}), translating individually")
+                        for text in batch:
+                            individual = self._translate_with_retry(text, 'auto', tgt_code)
+                            translated_texts.append(individual if individual else text)
+                            time.sleep(1.0)
+                else:
+                    # Batch failed entirely - translate individually
+                    print(f"DEBUG: Batch {batch_start}-{batch_end} failed, translating individually")
+                    for text in batch:
+                        individual = self._translate_with_retry(text, 'auto', tgt_code)
+                        translated_texts.append(individual if individual else text)
+                        time.sleep(1.0)
             
             print(f"DEBUG: Translated {min(batch_end, total)}/{total} blocks")
             time.sleep(0.5)  # Delay between batches

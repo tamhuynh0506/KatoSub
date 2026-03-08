@@ -270,7 +270,7 @@ class SelectiveInpaintPipe:
         except:
             return output_path
 
-    def clean_and_translate_srt(self, ocr_history, fps, target_lang, progress_callback=None):
+    def clean_and_translate_srt(self, ocr_history, fps, target_lang, translator_model="google", progress_callback=None):
         def _log(msg):
             if progress_callback: progress_callback(msg)
         
@@ -289,7 +289,7 @@ class SelectiveInpaintPipe:
         blocks = [b for b in srt_content.strip().split('\n\n') if b.strip()]
         _log(f"   Generated {len(blocks)} SRT blocks for translation")
         
-        translator = AITranslator()
+        translator = AITranslator(model=translator_model)
         result = translator.translate_srt_content(srt_content, target_lang)
         translator.unload()
         
@@ -299,7 +299,7 @@ class SelectiveInpaintPipe:
         
         return result
 
-def run_v4(video_path, target_lang, progress_callback=None):
+def run_v4(video_path, target_lang, translator_model="google", progress_callback=None):
     def _log(msg):
         if progress_callback: progress_callback(msg)
     
@@ -318,7 +318,7 @@ def run_v4(video_path, target_lang, progress_callback=None):
             inpaint_frames.add(f)
     _log(f"   {len(inpaint_frames)} frames marked for inpainting")
     
-    translated_srt = pipe.clean_and_translate_srt(ocr_history, fps, target_lang, progress_callback)
+    translated_srt = pipe.clean_and_translate_srt(ocr_history, fps, target_lang, translator_model, progress_callback)
     
     # Debug: save both SRTs next to the video for inspection
     base = video_path.replace(".mp4", "")

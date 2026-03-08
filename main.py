@@ -104,11 +104,26 @@ class App(ctk.CTk):
         sep = ctk.CTkFrame(sidebar, height=1, fg_color=COLORS["border"])
         sep.grid(row=2, column=0, sticky="ew", padx=15, pady=5)
 
+        ctk.CTkLabel(
+            sidebar, text="TRANSLATOR MODEL", font=(FONT_FAMILY, 10, "bold"),
+            text_color=COLORS["text_muted"],
+        ).grid(row=2, column=0, padx=20, pady=(15, 2), sticky="w")
+        
+        self.translator_var = ctk.StringVar(value="Google Translate")
+        ctk.CTkOptionMenu(
+            sidebar, variable=self.translator_var,
+            values=["Google Translate", "ChatGPT"],
+            fg_color=COLORS["card"], button_color=COLORS["accent"],
+            button_hover_color=COLORS["accent_hover"],
+            dropdown_fg_color=COLORS["card"],
+            width=180,
+        ).grid(row=3, column=0, padx=20, pady=(0, 8), sticky="w")
+
         # ── Target language ──
         ctk.CTkLabel(
             sidebar, text="TARGET LANGUAGE", font=(FONT_FAMILY, 10, "bold"),
             text_color=COLORS["text_muted"],
-        ).grid(row=3, column=0, padx=20, pady=(15, 4), sticky="w")
+        ).grid(row=4, column=0, padx=20, pady=(15, 4), sticky="w")
 
         self.target_lang_var = ctk.StringVar(value="Vietnamese")
         ctk.CTkOptionMenu(
@@ -118,22 +133,10 @@ class App(ctk.CTk):
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["card"],
             width=180,
-        ).grid(row=4, column=0, padx=20, pady=(0, 8), sticky="w")
+        ).grid(row=5, column=0, padx=20, pady=(0, 8), sticky="w")
 
         sep2 = ctk.CTkFrame(sidebar, height=1, fg_color=COLORS["border"])
-        sep2.grid(row=5, column=0, sticky="ew", padx=15, pady=10)
-
-        # (Upscale and Frame Skip sliders removed for cleaner UI)
-
-        ctk.CTkLabel(
-            sidebar, text="TRANSLATION (GOOGLE – UNLIMITED)", font=(FONT_FAMILY, 10, "bold"),
-            text_color=COLORS["success"],
-        ).grid(row=13, column=0, padx=20, pady=(15, 2), sticky="w")
-        
-        ctk.CTkLabel(
-            sidebar, text="Auto-Detect Search Lang", font=(FONT_FAMILY, 10),
-            text_color=COLORS["text_muted"],
-        ).grid(row=14, column=0, padx=20, pady=(0, 8), sticky="w")
+        sep2.grid(row=6, column=0, sticky="ew", padx=15, pady=10)
 
     # ─── Main Area ────────────────────────────────────────────────────────
 
@@ -345,6 +348,8 @@ class App(ctk.CTk):
         """Process all queued videos sequentially."""
         target_name = self.target_lang_var.get()
         target_code = TARGET_LANGUAGES.get(target_name, "vi")
+        translator_name = self.translator_var.get()
+        translator_model = "chatgpt" if translator_name == "ChatGPT" else "google"
 
         total_videos = len(self.video_paths)
 
@@ -369,7 +374,8 @@ class App(ctk.CTk):
                 # Logic strictly for v4 pipeline
                 result = run_v4(
                     video_path, 
-                    target_code, 
+                    target_code,
+                    translator_model=translator_model,
                     progress_callback=progress_cb
                 )
 
