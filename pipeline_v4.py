@@ -174,7 +174,7 @@ class SelectiveInpaintPipe:
             '-s', f'{w}x{h}', '-pix_fmt', 'bgr24', '-r', str(fps),
             '-i', '-', 
             '-vf', vf_filter,
-            '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '20',
+            '-c:v', 'h264_nvenc', '-preset', 'p5', '-cq', '32', '-b:v', '5M', '-maxrate', '8M', '-bufsize', '16M',
             '-c:a', 'aac', 
             output_path
         ]
