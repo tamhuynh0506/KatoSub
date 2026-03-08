@@ -69,32 +69,56 @@ class AIInpainter:
 
     def inpaint_frame(self, frame, boxes):
         """
-        Inpaint a single frame.
+        Inpaint a single frame with selective cropping for performance.
         """
         if not boxes:
             return frame
         
         self._ensure_lama()
         
-        # Create mask
-        mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+        # 1. Calculate the bounding box of all subtitle boxes in this frame
+        # We add some padding to ensure the AI has context
+        all_pts = []
         for box in boxes:
-            pts = np.array(box, dtype=np.int32)
+            all_pts.extend(box)
+        all_pts = np.array(all_pts, dtype=np.int32)
+        
+        x_min, y_min = np.min(all_pts, axis=0)
+        x_max, y_max = np.max(all_pts, axis=0)
+        
+        # Add padding (e.g. 20px)
+        pad = 20
+        h_f, w_f = frame.shape[:2]
+        x_start = max(0, int(x_min) - pad)
+        y_start = max(0, int(y_min) - pad)
+        x_end = min(w_f, int(x_max) + pad)
+        y_end = min(h_f, int(y_max) + pad)
+        
+        # 2. Extract the cropped ROI
+        roi = frame[y_start:y_end, x_start:x_end]
+        if roi.size == 0:
+            return frame
+            
+        # 3. Create mask for the ROI
+        mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+        # Remap boxes to ROI coordinates
+        for box in boxes:
+            pts = np.array([[p[0] - x_start, p[1] - y_start] for p in box], dtype=np.int32)
             cv2.fillPoly(mask, [pts], 255)
         
-        # Dilate mask slightly to cover edges, glows, and shadows
+        # Apply dilation to the mask
         kernel = np.ones((7, 7), np.uint8)
-        mask = cv2.dilate(mask, kernel, iterations=4)
+        mask = cv2.dilate(mask, kernel, iterations=3)
         
-        # Convert BGR to RGB for LaMa
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Run LaMa using the wrapper's verified logic
+        # 4. Inpaint the ROI
         try:
-            result_pil = self._lama_wrapper(frame_rgb, mask)
-            # Convert back to BGR numpy array
-            return cv2.cvtColor(np.array(result_pil), cv2.COLOR_RGB2BGR)
+            roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+            result_pil = self._lama_wrapper(roi_rgb, mask)
+            result_roi = cv2.cvtColor(np.array(result_pil), cv2.COLOR_RGB2BGR)
+            
+            # 5. Paste back into original frame
+            frame[y_start:y_end, x_start:x_end] = result_roi[:(y_end-y_start), :(x_end-x_start)]
+            return frame
         except Exception as e:
-            # Fallback to original frame on AI error to prevent pipeline crash
             print(f"AI Inpainting error: {e}")
             return frame

@@ -41,31 +41,13 @@ ctk.set_default_color_theme("blue")
 
 # ─── Supported Languages ─────────────────────────────────────────────────────
 
-SOURCE_LANGUAGES = {
-    "English": "en",
-    "Japanese": "ja",
-    "Korean": "ko",
-    "Chinese (Simplified)": "zh-cn",
-    "Chinese (Traditional)": "zh-tw",
-    "French": "fr",
-    "German": "de",
-    "Spanish": "es",
-    "Portuguese": "pt",
-    "Russian": "ru",
-    "Arabic": "ar",
-    "Thai": "th",
-    "Hindi": "hi",
-    "Indonesian": "id",
-    "Vietnamese": "vi",
-    "Italian": "it",
-}
-
 TARGET_LANGUAGES = {
     "Vietnamese": "vi",
     "English": "en",
     "Japanese": "ja",
     "Korean": "ko",
     "Chinese (Simplified)": "zh-cn",
+    "Chinese (Traditional)": "zh-tw",
     "French": "fr",
     "German": "de",
     "Spanish": "es",
@@ -122,27 +104,11 @@ class App(ctk.CTk):
         sep = ctk.CTkFrame(sidebar, height=1, fg_color=COLORS["border"])
         sep.grid(row=2, column=0, sticky="ew", padx=15, pady=5)
 
-        # ── Source language ──
-        ctk.CTkLabel(
-            sidebar, text="SOURCE LANGUAGE", font=(FONT_FAMILY, 10, "bold"),
-            text_color=COLORS["text_muted"],
-        ).grid(row=3, column=0, padx=20, pady=(15, 4), sticky="w")
-
-        self.source_lang_var = ctk.StringVar(value="English")
-        ctk.CTkOptionMenu(
-            sidebar, variable=self.source_lang_var,
-            values=list(SOURCE_LANGUAGES.keys()),
-            fg_color=COLORS["card"], button_color=COLORS["accent"],
-            button_hover_color=COLORS["accent_hover"],
-            dropdown_fg_color=COLORS["card"],
-            width=180,
-        ).grid(row=4, column=0, padx=20, pady=(0, 8), sticky="w")
-
         # ── Target language ──
         ctk.CTkLabel(
             sidebar, text="TARGET LANGUAGE", font=(FONT_FAMILY, 10, "bold"),
             text_color=COLORS["text_muted"],
-        ).grid(row=5, column=0, padx=20, pady=(8, 4), sticky="w")
+        ).grid(row=3, column=0, padx=20, pady=(15, 4), sticky="w")
 
         self.target_lang_var = ctk.StringVar(value="Vietnamese")
         ctk.CTkOptionMenu(
@@ -152,44 +118,22 @@ class App(ctk.CTk):
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["card"],
             width=180,
-        ).grid(row=6, column=0, padx=20, pady=(0, 8), sticky="w")
+        ).grid(row=4, column=0, padx=20, pady=(0, 8), sticky="w")
 
         sep2 = ctk.CTkFrame(sidebar, height=1, fg_color=COLORS["border"])
-        sep2.grid(row=7, column=0, sticky="ew", padx=15, pady=10)
+        sep2.grid(row=5, column=0, sticky="ew", padx=15, pady=10)
 
         # (Upscale and Frame Skip sliders removed for cleaner UI)
 
-        # ── AI API settings ──
         ctk.CTkLabel(
-            sidebar, text="GEMINI API KEY", font=(FONT_FAMILY, 10, "bold"),
-            text_color=COLORS["text_muted"],
+            sidebar, text="TRANSLATION (GOOGLE – UNLIMITED)", font=(FONT_FAMILY, 10, "bold"),
+            text_color=COLORS["success"],
         ).grid(row=13, column=0, padx=20, pady=(15, 2), sticky="w")
         
-        self.api_key_var = ctk.StringVar(value="")
-        self.api_key_entry = ctk.CTkEntry(
-            sidebar, textvariable=self.api_key_var, placeholder_text="Paste key here...",
-            fg_color=COLORS["card"], border_color=COLORS["border"],
-            show="*", height=32, width=180
-        )
-        self.api_key_entry.grid(row=14, column=0, padx=20, pady=(0, 8), sticky="w")
-
-        # (Pipeline Selection UI removed as requested)
-
-        self.appearance_var = ctk.StringVar(value="Dark")
         ctk.CTkLabel(
-            sidebar, text="THEME", font=(FONT_FAMILY, 10, "bold"),
+            sidebar, text="Auto-Detect Search Lang", font=(FONT_FAMILY, 10),
             text_color=COLORS["text_muted"],
-        ).grid(row=18, column=0, padx=20, pady=(5, 4), sticky="w")
-
-        ctk.CTkSegmentedButton(
-            sidebar, values=["Dark", "Light", "System"],
-            variable=self.appearance_var,
-            command=self._change_appearance,
-            selected_color=COLORS["accent"],
-            selected_hover_color=COLORS["accent_hover"],
-            unselected_color=COLORS["card"],
-            width=180,
-        ).grid(row=19, column=0, padx=20, pady=(0, 20), sticky="w")
+        ).grid(row=14, column=0, padx=20, pady=(0, 8), sticky="w")
 
     # ─── Main Area ────────────────────────────────────────────────────────
 
@@ -338,8 +282,6 @@ class App(ctk.CTk):
 
     # (Unused slider callbacks removed)
 
-    def _change_appearance(self, mode):
-        ctk.set_appearance_mode(mode)
 
     # ─── File Management ──────────────────────────────────────────────────
 
@@ -401,9 +343,7 @@ class App(ctk.CTk):
 
     def _processing_loop(self):
         """Process all queued videos sequentially."""
-        source_name = self.source_lang_var.get()
         target_name = self.target_lang_var.get()
-        source_code = SOURCE_LANGUAGES.get(source_name, "en")
         target_code = TARGET_LANGUAGES.get(target_name, "vi")
 
         total_videos = len(self.video_paths)
@@ -426,13 +366,9 @@ class App(ctk.CTk):
                     self._log(f"   {msg}")
                     self._update_progress_from_msg(msg, _idx, total_videos)
 
-                api_key = self.api_key_var.get()
-                
                 # Logic strictly for v4 pipeline
                 result = run_v4(
                     video_path, 
-                    api_key, 
-                    source_code, 
                     target_code, 
                     progress_callback=progress_cb
                 )
