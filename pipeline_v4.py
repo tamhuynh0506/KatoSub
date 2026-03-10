@@ -82,27 +82,43 @@ class SelectiveInpaintPipe:
                             debug_first = False
                         
                         if result and result[0]:
+                            # Group boxes and texts to sort by vertical position
+                            detected_lines = []
                             for line in result[0]:
                                 bbox, (text, prob) = line
                                 if prob > 0.4:
-                                    s_back = w_roi / self.ocr_width if w_roi > self.ocr_width else 1.0
-                                    remapped_box = [[float(p[0] * s_back), float((p[1] * s_back) + roi_top)] for p in bbox]
-                                    boxes.append(remapped_box)
-                                    txts.append(text)
-                    else:
-                        result = self.ocr_engine.readtext(roi)
-                        boxes = []; txts = []
-                        for (bbox, text, prob) in result:
-                            if prob > 0.4:
+                                    detected_lines.append((bbox, text))
+                            
+                            # Sort top-to-bottom based on the first point's Y coordinate
+                            detected_lines.sort(key=lambda x: x[0][0][1])
+                            
+                            for bbox, text in detected_lines:
                                 s_back = w_roi / self.ocr_width if w_roi > self.ocr_width else 1.0
                                 remapped_box = [[float(p[0] * s_back), float((p[1] * s_back) + roi_top)] for p in bbox]
                                 boxes.append(remapped_box)
                                 txts.append(text)
+                    else:
+                        result = self.ocr_engine.readtext(roi)
+                        boxes = []; txts = []
+                        # Group for sorting
+                        detected_lines = []
+                        for (bbox, text, prob) in result:
+                            if prob > 0.4:
+                                detected_lines.append((bbox, text))
+                        
+                        # Sort top-to-bottom
+                        detected_lines.sort(key=lambda x: x[0][0][1])
+                        
+                        for bbox, text in detected_lines:
+                            s_back = w_roi / self.ocr_width if w_roi > self.ocr_width else 1.0
+                            remapped_box = [[float(p[0] * s_back), float((p[1] * s_back) + roi_top)] for p in bbox]
+                            boxes.append(remapped_box)
+                            txts.append(text)
                     
                     if txts:
                         ocr_history.append({
                             'frame': frame_idx,
-                            'text': " ".join(txts),
+                            'text': "\n".join(txts), # Join with newline to preserve speakers
                             'boxes': boxes
                         })
                 except Exception as e:
@@ -270,7 +286,7 @@ class SelectiveInpaintPipe:
         except:
             return output_path
 
-    def clean_and_translate_srt(self, ocr_history, fps, target_lang, progress_callback=None):
+    def clean_and_translate_srt(self, ocr_history, fps, target_lang, translator_model="google", progress_callback=None):
         def _log(msg):
             if progress_callback: progress_callback(msg)
         
@@ -289,7 +305,7 @@ class SelectiveInpaintPipe:
         blocks = [b for b in srt_content.strip().split('\n\n') if b.strip()]
         _log(f"   Generated {len(blocks)} SRT blocks for translation")
         
-        translator = AITranslator()
+        translator = AITranslator(model=translator_model)
         result = translator.translate_srt_content(srt_content, target_lang)
         translator.unload()
         
@@ -299,7 +315,7 @@ class SelectiveInpaintPipe:
         
         return result
 
-def run_v4(video_path, target_lang, progress_callback=None):
+def run_v4(video_path, target_lang, translator_model="google", progress_callback=None):
     def _log(msg):
         if progress_callback: progress_callback(msg)
     
@@ -318,7 +334,7 @@ def run_v4(video_path, target_lang, progress_callback=None):
             inpaint_frames.add(f)
     _log(f"   {len(inpaint_frames)} frames marked for inpainting")
     
-    translated_srt = pipe.clean_and_translate_srt(ocr_history, fps, target_lang, progress_callback)
+    translated_srt = pipe.clean_and_translate_srt(ocr_history, fps, target_lang, translator_model, progress_callback)
     
     # Debug: save both SRTs next to the video for inspection
     base = video_path.replace(".mp4", "")
