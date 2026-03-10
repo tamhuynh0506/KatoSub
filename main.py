@@ -112,7 +112,7 @@ class App(ctk.CTk):
         self.translator_var = ctk.StringVar(value="Google Translate")
         ctk.CTkOptionMenu(
             sidebar, variable=self.translator_var,
-            values=["Google Translate", "ChatGPT"],
+            values=["Google Translate", "ChatGPT", "Ollama (gemma3:12b)", "Ollama (gemma3:27b)"],
             fg_color=COLORS["card"], button_color=COLORS["accent"],
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["card"],
@@ -349,7 +349,14 @@ class App(ctk.CTk):
         target_name = self.target_lang_var.get()
         target_code = TARGET_LANGUAGES.get(target_name, "vi")
         translator_name = self.translator_var.get()
-        translator_model = "chatgpt" if translator_name == "ChatGPT" else "google"
+        # Map UI display name -> internal model identifier
+        if translator_name == "ChatGPT":
+            translator_model = "chatgpt"
+        elif translator_name.startswith("Ollama"):
+            # Extract model name from "Ollama (gemma3:12b)" -> "gemma3:12b"
+            translator_model = "ollama:" + translator_name.split("(")[1].rstrip(")")
+        else:
+            translator_model = "google"
 
         total_videos = len(self.video_paths)
 

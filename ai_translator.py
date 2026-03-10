@@ -21,8 +21,11 @@ LANG_MAP = {
 
 class AITranslator:
     def __init__(self, model="google"):
-        """Translator supporting Google Translate and ChatGPT."""
+        """Translator supporting Google Translate, ChatGPT, and Ollama (Gemma 3)."""
         self.model = model
+        self.client = None
+        self.ollama_model = None
+
         if self.model == "chatgpt":
             if not OpenAI:
                 print("DEBUG: OpenAI library not installed. Falling back to Google.")
@@ -33,7 +36,31 @@ class AITranslator:
             else:
                 print("DEBUG: Initializing ChatGPT Translator")
                 self.client = OpenAI(api_key=config.OPENAI_API_KEY)
-        
+
+        elif self.model.startswith("ollama:"):
+            # e.g. "ollama:gemma3:12b" -> ollama_model = "gemma3:12b"
+            self.ollama_model = self.model.split("ollama:", 1)[1]
+            if not OpenAI:
+                print("DEBUG: OpenAI library not installed (needed for Ollama client). Falling back to Google.")
+                self.model = "google"
+            else:
+                print(f"DEBUG: Initializing Ollama Translator with model: {self.ollama_model}")
+                import requests
+                found = False
+                for host in ["localhost", "127.0.0.1"]:
+                    try:
+                        test_resp = requests.get(f"http://{host}:11434/api/tags", timeout=3)
+                        if test_resp.status_code == 200:
+                            print(f"DEBUG: Ollama server found on {host}")
+                            self.client = OpenAI(base_url=f"http://{host}:11434/v1", api_key="ollama", timeout=120.0)
+                            found = True
+                            break
+                    except Exception:
+                        continue
+                if not found:
+                    print("DEBUG: Ollama server NOT reachable. Falling back to Google.")
+                    self.model = "google"
+
         if self.model == "google":
             print("DEBUG: Initializing Google Translate (Unlimited, Free)")
 
@@ -54,8 +81,24 @@ class AITranslator:
                     print(f"DEBUG: Translation failed after {max_retries} retries: {err[:80]}")
         return None
 
-    def _translate_batch_chatgpt(self, texts, target_lang):
-        prompt = f"Translate the following JSON array of subtitle texts to {target_lang}. Return ONLY a valid JSON array of strings containing the translations in the exact same order. Do not include any explanations, markdown formatting like ```json, or other text.\n\n"
+    def _translate_batch_chatgpt(self, texts, target_lang, all_texts=None):
+        prompt = f"""Translate the following JSON array of subtitle texts to {target_lang}. Return ONLY a valid JSON array of strings containing the translations in the exact same order.
+            Guidelines:
+            - Correct translation mistakes and improve grammar.
+            - Rewrite sentences to sound natural, conversational, and fluent.
+            - Maintain consistent terminology for character names, titles, locations, skills/abilities, organizations, and important objects or concepts.
+            - Keep subtitles concise and readable. Remove redundant words if necessary, but do not remove important meaning.
+            - If a line is clearly incorrect or meaningless, rewrite it so it best matches the likely intended meaning based on context.
+            - CRITICALLY IMPORTANT: Return ONLY a valid JSON array of strings. Do not include any explanations, markdown formatting like ```json, or other text.
+        """
+        
+        if all_texts and len(all_texts) > 0:
+            prompt += "--- REFERENCE CONTEXT (Full Transcript) ---\n"
+            prompt += "The following is the full video transcript to help you establish a 'Terminology Memory'. Use this context to ensure the same translations for names and special terms are used consistently, and to understand the story, character relationships, and tone:\n"
+            prompt += " ".join([t.replace('\n', ' ') for t in all_texts])
+            prompt += "\n--------------------------\n\n"
+            
+        prompt += "--- TEXTS TO TRANSLATE NOW ---\n"
         prompt += json.dumps(texts, ensure_ascii=False)
         
         for attempt in range(3):
@@ -63,7 +106,7 @@ class AITranslator:
                 response = self.client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": "You are a professional subtitle translator. You ONLY return a JSON array string."},
+                        {"role": "system", "content": "You are a professional subtitle translator and editor working on TV, Anime, and Drama series. Your task is to carefully review and improve subtitles while maintaining absolute consistency for character names, locations, and special terms across the entire file. You ONLY return a JSON array string of the translations."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.3
@@ -82,6 +125,73 @@ class AITranslator:
             except Exception as e:
                 print(f"DEBUG: ChatGPT translation error on attempt {attempt+1}: {e}")
                 time.sleep(1)
+        return None
+
+    def _translate_batch_ollama(self, texts, target_lang, all_texts=None):
+        """Translate a batch of subtitle texts using the local Ollama model (Gemma 3)."""
+        system_msg = (
+            "You are a professional subtitle translator and editor working on TV, Anime, and Drama series. "
+            "Your task is to carefully review and improve subtitles while maintaining absolute consistency "
+            "for character names, locations, and special terms across the entire file. "
+            "You ONLY return a JSON array of strings containing the translations."
+        )
+
+        prompt = f"""Translate the following JSON array of subtitle texts to {target_lang}. Return ONLY a valid JSON array of strings containing the translations in the exact same order.
+Guidelines:
+- Correct translation mistakes and improve grammar.
+- Rewrite sentences to sound natural, conversational, and fluent — like a real TV drama subtitle.
+- Maintain consistent terminology for character names, titles, locations, and important terms.
+- Keep subtitles concise and readable.
+- If a line is clearly incorrect or meaningless, rewrite it to best match the likely intended meaning based on context.
+- CRITICALLY IMPORTANT: Return ONLY a valid JSON array of {len(texts)} strings. No explanations, no markdown, no extra text.
+"""
+
+        if all_texts and len(all_texts) > 0:
+            prompt += "--- REFERENCE CONTEXT (Full Transcript) ---\n"
+            prompt += "Use this context to understand the story, characters, and tone:\n"
+            prompt += " ".join([t.replace('\n', ' ') for t in all_texts[:50]])
+            prompt += "\n--------------------------\n\n"
+
+        prompt += f"--- TEXTS TO TRANSLATE NOW (return exactly {len(texts)} strings) ---\n"
+        prompt += json.dumps(texts, ensure_ascii=False)
+
+        for attempt in range(3):
+            try:
+                print(f"DEBUG: Waiting for Ollama ({self.ollama_model}) response (Batch {len(texts)} lines)...")
+                response = self.client.chat.completions.create(
+                    model=self.ollama_model,
+                    messages=[
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3
+                )
+                content = response.choices[0].message.content.strip()
+
+                # Strip markdown fences if present
+                if content.startswith("```json"):
+                    content = content[7:-3].strip()
+                elif content.startswith("```"):
+                    content = content[3:-3].strip()
+
+                # Try to extract JSON array from the response
+                # Sometimes models wrap the array in extra text
+                json_match = re.search(r'\[.*\]', content, re.DOTALL)
+                if json_match:
+                    content = json_match.group(0)
+
+                result = json.loads(content)
+                if isinstance(result, list) and len(result) == len(texts):
+                    return result
+                else:
+                    print(f"DEBUG: Ollama length mismatch ({len(result)} vs {len(texts)}), retrying...")
+            except json.JSONDecodeError as e:
+                print(f"DEBUG: Ollama JSON parse error on attempt {attempt+1}: {e}")
+                print(f"DEBUG: Raw response: {content[:200]}...")
+                time.sleep(1)
+            except Exception as e:
+                print(f"DEBUG: Ollama translation error on attempt {attempt+1}: {e}")
+                time.sleep(2)
         return None
 
     def translate_srt_content(self, srt_content, target_lang):
@@ -105,7 +215,7 @@ class AITranslator:
             lines = block.split('\n')
             if len(lines) >= 3:
                 header = lines[:2]
-                text = " ".join(lines[2:]).strip()
+                text = "\n".join(lines[2:]).strip()  # Preserve multi-line dialogue
                 if text:
                     headers.append(header)
                     texts.append(text)
@@ -121,9 +231,13 @@ class AITranslator:
         total = len(texts)
         print(f"DEBUG: Found {total} subtitle blocks to translate")
 
-        # Translate in small batches using newline as separator
-        # Google Translate preserves newlines reliably
-        BATCH_SIZE = 30 if self.model == "chatgpt" else 10
+        # Batch sizes: ChatGPT handles large batches well, Ollama needs smaller ones
+        if self.model == "chatgpt":
+            BATCH_SIZE = 30
+        elif self.model.startswith("ollama:"):
+            BATCH_SIZE = 5  # Gemma 12b/27b handle 5 well with structured prompts
+        else:
+            BATCH_SIZE = 10
         translated_texts = []
         
         for batch_start in range(0, total, BATCH_SIZE):
@@ -131,11 +245,21 @@ class AITranslator:
             batch = texts[batch_start:batch_end]
             
             if self.model == "chatgpt":
-                parts = self._translate_batch_chatgpt(batch, target_lang)
+                parts = self._translate_batch_chatgpt(batch, target_lang, all_texts=texts)
                 if parts:
                     translated_texts.extend(parts)
                 else:
                     print(f"DEBUG: Batch {batch_start}-{batch_end} failed with ChatGPT, falling back to Google individually")
+                    for text in batch:
+                        individual = self._translate_with_retry(text, 'auto', tgt_code)
+                        translated_texts.append(individual if individual else text)
+                        time.sleep(1.0)
+            elif self.model.startswith("ollama:"):
+                parts = self._translate_batch_ollama(batch, target_lang, all_texts=texts)
+                if parts:
+                    translated_texts.extend(parts)
+                else:
+                    print(f"DEBUG: Batch {batch_start}-{batch_end} failed with Ollama, falling back to Google individually")
                     for text in batch:
                         individual = self._translate_with_retry(text, 'auto', tgt_code)
                         translated_texts.append(individual if individual else text)
