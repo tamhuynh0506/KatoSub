@@ -12,6 +12,13 @@ try:
 except ImportError:
     OpenAI = None
 
+def format_eta(seconds):
+    if seconds > 3600:
+        return f"{int(seconds // 3600)}:{(int(seconds % 3600) // 60):02}:{(int(seconds % 60)):02}"
+    else:
+        return f"{(int(seconds // 60)):02}:{(int(seconds % 60)):02}"
+
+
 # Language name -> Google Translate language code
 LANG_MAP = {
     "en": "en", "ja": "ja", "ko": "ko", "zh-cn": "zh-CN", "zh-tw": "zh-TW",
@@ -198,9 +205,13 @@ Guidelines:
                 time.sleep(2)
         return None
 
-    def translate_srt_content(self, srt_content, target_lang):
+    def translate_srt_content(self, srt_content, target_lang, progress_callback=None):
         if not srt_content.strip():
             return srt_content
+
+        def _log(msg):
+            if progress_callback:
+                progress_callback(msg)
 
         # Always auto-detect source language — OCR text may differ from the user's selection
         # (e.g., user selects "English" but video has Spanish/Japanese burned-in subs)
@@ -234,6 +245,8 @@ Guidelines:
 
         total = len(texts)
         print(f"DEBUG: Found {total} subtitle blocks to translate")
+
+        start_time = time.time()
 
         # Batch sizes: ChatGPT handles large batches well, Ollama needs smaller ones
         if self.model == "chatgpt":
@@ -296,7 +309,15 @@ Guidelines:
                         translated_texts.append(individual if individual else text)
                         time.sleep(1.0)
             
-            print(f"DEBUG: Translated {min(batch_end, total)}/{total} blocks")
+
+            elapsed = time.time() - start_time
+            speed = batch_end / elapsed if elapsed > 0 else 0
+            eta_str = "Calculating..."
+            if speed > 0:
+                eta_sec = (total - batch_end) / speed
+                eta_str = format_eta(eta_sec)
+
+            _log(f"Translating to {target_lang}: {int(batch_end/total*100)}% ({batch_end}/{total}) | ETA: {eta_str}")
             time.sleep(0.5)  # Delay between batches
 
         # Reassemble SRT
@@ -311,7 +332,7 @@ Guidelines:
                 translated_blocks.append(entry[1])
 
         success = sum(1 for i in range(len(translated_texts)) if i < len(texts) and translated_texts[i] != texts[i])
-        print(f"DEBUG: Translation complete: {success}/{total} blocks translated")
+        _log(f"Translation complete: {success}/{total} blocks translated")
 
         return "\n\n".join(translated_blocks)
 

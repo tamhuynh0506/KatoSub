@@ -11,6 +11,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import threading
 from pipeline_v4 import run_v4
+from pipeline_audio import run_audio_pipeline
 
 # ─── Color Palette & Theme ───────────────────────────────────────────────────
 
@@ -104,10 +105,45 @@ class App(ctk.CTk):
         sep = ctk.CTkFrame(sidebar, height=1, fg_color=COLORS["border"])
         sep.grid(row=2, column=0, sticky="ew", padx=15, pady=5)
 
+        # ── Pipeline Mode ──
+        ctk.CTkLabel(
+            sidebar, text="PIPELINE MODE", font=(FONT_FAMILY, 10, "bold"),
+            text_color=COLORS["text_muted"],
+        ).grid(row=2, column=0, padx=20, pady=(15, 2), sticky="w")
+
+        self.pipeline_mode_var = ctk.StringVar(value="Hardcoded Subs (OCR)")
+        ctk.CTkOptionMenu(
+            sidebar, variable=self.pipeline_mode_var,
+            values=["Hardcoded Subs (OCR)", "Audio Only (Whisper)"],
+            fg_color=COLORS["card"], button_color=COLORS["accent"],
+            button_hover_color=COLORS["accent_hover"],
+            dropdown_fg_color=COLORS["card"],
+            width=180,
+            command=self._on_pipeline_mode_change,
+        ).grid(row=3, column=0, padx=20, pady=(0, 8), sticky="w")
+
+        # ── Whisper Model (shown only for Audio mode) ──
+        self.whisper_label = ctk.CTkLabel(
+            sidebar, text="WHISPER MODEL", font=(FONT_FAMILY, 10, "bold"),
+            text_color=COLORS["text_muted"],
+        )
+
+        self.whisper_model_var = ctk.StringVar(value="base")
+        self.whisper_menu = ctk.CTkOptionMenu(
+            sidebar, variable=self.whisper_model_var,
+            values=["tiny", "base", "small", "medium"],
+            fg_color=COLORS["card"], button_color=COLORS["accent"],
+            button_hover_color=COLORS["accent_hover"],
+            dropdown_fg_color=COLORS["card"],
+            width=180,
+        )
+        # Hidden by default (OCR mode is default)
+
+        # ── Translator Model ──
         ctk.CTkLabel(
             sidebar, text="TRANSLATOR MODEL", font=(FONT_FAMILY, 10, "bold"),
             text_color=COLORS["text_muted"],
-        ).grid(row=2, column=0, padx=20, pady=(15, 2), sticky="w")
+        ).grid(row=6, column=0, padx=20, pady=(15, 2), sticky="w")
         
         self.translator_var = ctk.StringVar(value="Google Translate")
         ctk.CTkOptionMenu(
@@ -117,13 +153,13 @@ class App(ctk.CTk):
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["card"],
             width=180,
-        ).grid(row=3, column=0, padx=20, pady=(0, 8), sticky="w")
+        ).grid(row=7, column=0, padx=20, pady=(0, 8), sticky="w")
 
         # ── Target language ──
         ctk.CTkLabel(
             sidebar, text="TARGET LANGUAGE", font=(FONT_FAMILY, 10, "bold"),
             text_color=COLORS["text_muted"],
-        ).grid(row=4, column=0, padx=20, pady=(15, 4), sticky="w")
+        ).grid(row=8, column=0, padx=20, pady=(15, 4), sticky="w")
 
         self.target_lang_var = ctk.StringVar(value="Vietnamese")
         ctk.CTkOptionMenu(
@@ -133,10 +169,19 @@ class App(ctk.CTk):
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["card"],
             width=180,
-        ).grid(row=5, column=0, padx=20, pady=(0, 8), sticky="w")
+        ).grid(row=9, column=0, padx=20, pady=(0, 8), sticky="w")
 
         sep2 = ctk.CTkFrame(sidebar, height=1, fg_color=COLORS["border"])
-        sep2.grid(row=6, column=0, sticky="ew", padx=15, pady=10)
+        sep2.grid(row=10, column=0, sticky="ew", padx=15, pady=10)
+
+    def _on_pipeline_mode_change(self, value):
+        """Show/hide Whisper model selector based on pipeline mode."""
+        if value == "Audio Only (Whisper)":
+            self.whisper_label.grid(row=4, column=0, padx=20, pady=(15, 2), sticky="w")
+            self.whisper_menu.grid(row=5, column=0, padx=20, pady=(0, 8), sticky="w")
+        else:
+            self.whisper_label.grid_forget()
+            self.whisper_menu.grid_forget()
 
     # ─── Main Area ────────────────────────────────────────────────────────
 
@@ -358,11 +403,18 @@ class App(ctk.CTk):
         else:
             translator_model = "google"
 
+        pipeline_mode = self.pipeline_mode_var.get()
+        whisper_model = self.whisper_model_var.get()
+        is_audio_mode = (pipeline_mode == "Audio Only (Whisper)")
+
         total_videos = len(self.video_paths)
 
         try:
             self._log(f"🚀  System: GPU Accelerated (RTX 3050 Check)")
-            self._log("🚀  Engine: Advanced Selective Inpainting (v4)")
+            if is_audio_mode:
+                self._log(f"🚀  Engine: Audio Transcription (Whisper {whisper_model})")
+            else:
+                self._log("🚀  Engine: Advanced Selective Inpainting (v4)")
 
             for idx, video_path in enumerate(self.video_paths):
                 if self.cancel_event.is_set():
@@ -378,13 +430,22 @@ class App(ctk.CTk):
                     self._log(f"   {msg}")
                     self._update_progress_from_msg(msg, _idx, total_videos)
 
-                # Logic strictly for v4 pipeline
-                result = run_v4(
-                    video_path, 
-                    target_code,
-                    translator_model=translator_model,
-                    progress_callback=progress_cb
-                )
+                if is_audio_mode:
+                    result = run_audio_pipeline(
+                        video_path,
+                        target_code,
+                        translator_model=translator_model,
+                        whisper_model=whisper_model,
+                        progress_callback=progress_cb,
+                    )
+                else:
+                    # Logic strictly for v4 pipeline
+                    result = run_v4(
+                        video_path, 
+                        target_code,
+                        translator_model=translator_model,
+                        progress_callback=progress_cb
+                    )
 
                 if result:
                     self._log(f"   ✅  Saved → {os.path.basename(result)}")
@@ -419,15 +480,32 @@ class App(ctk.CTk):
         """Try to extract a percentage from the progress message and update the bar."""
         if not msg or not isinstance(msg, str): return
         try:
+            video_share = 1.0 / total_videos
+            base_overall = video_idx * video_share
+            
             if "%" in msg:
                 # Extract the percentage number before the % sign
                 parts = msg.split("%")[0].split()
                 if parts:
                     pct_str = parts[-1].rstrip("%")
-                    frame_pct = int(pct_str) / 100.0
-                    # Scale to overall progress across all videos
-                    video_share = 1.0 / total_videos
-                    overall = (video_idx * video_share) + (frame_pct * video_share)
+                    step_pct = int(pct_str) / 100.0
+                    
+                    # Weight different steps for the overall progress bar
+                    if "OCR Detection" in msg:
+                        # 0-30% of the video's share
+                        overall = base_overall + (step_pct * 0.3 * video_share)
+                    elif "Translating" in msg:
+                        # 30-45% of the video's share
+                        overall = base_overall + (0.3 * video_share) + (step_pct * 0.15 * video_share)
+                    elif "Inpainting" in msg or "Rendering" in msg:
+                        # 45-100% of the video's share
+                        overall = base_overall + (0.45 * video_share) + (step_pct * 0.55 * video_share)
+                    elif "Transcribing" in msg:
+                        # 0-50% for audio mode
+                        overall = base_overall + (step_pct * 0.5 * video_share)
+                    else:
+                        overall = base_overall + (step_pct * video_share)
+                        
                     self.after(0, lambda p=overall: self.progress_bar.set(p))
                     self.after(0, lambda p=int(overall * 100): self.progress_pct_label.configure(text=f"{p}%"))
             
@@ -437,8 +515,7 @@ class App(ctk.CTk):
                 self.after(0, lambda e=eta_val: self.eta_label.configure(text=f"ETA: {e}"))
 
             if "Merging" in msg or "Writing" in msg:
-                video_share = 1.0 / total_videos
-                overall = ((video_idx + 0.9) * video_share)
+                overall = ((video_idx + 0.95) * video_share)
                 self.after(0, lambda p=overall: self.progress_bar.set(p))
                 self.after(0, lambda p=int(overall * 100): self.progress_pct_label.configure(text=f"{p}%"))
         except Exception:
