@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox
 import threading
 from pipeline_v4 import run_v4
 from pipeline_audio import run_audio_pipeline
+from pipeline_replace_subs import run_replace_subs_pipeline
 
 # ─── Color Palette & Theme ───────────────────────────────────────────────────
 
@@ -114,7 +115,7 @@ class App(ctk.CTk):
         self.pipeline_mode_var = ctk.StringVar(value="Hardcoded Subs (OCR)")
         ctk.CTkOptionMenu(
             sidebar, variable=self.pipeline_mode_var,
-            values=["Hardcoded Subs (OCR)", "Audio Only (Whisper)"],
+            values=["Hardcoded Subs (OCR)", "Audio Only (Whisper)", "Replace Subs (Full)"],
             fg_color=COLORS["card"], button_color=COLORS["accent"],
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["card"],
@@ -180,6 +181,7 @@ class App(ctk.CTk):
             self.whisper_label.grid(row=4, column=0, padx=20, pady=(15, 2), sticky="w")
             self.whisper_menu.grid(row=5, column=0, padx=20, pady=(0, 8), sticky="w")
         else:
+            # Replace Subs (Full) uses medium hardcoded; OCR doesn't use Whisper
             self.whisper_label.grid_forget()
             self.whisper_menu.grid_forget()
 
@@ -406,12 +408,15 @@ class App(ctk.CTk):
         pipeline_mode = self.pipeline_mode_var.get()
         whisper_model = self.whisper_model_var.get()
         is_audio_mode = (pipeline_mode == "Audio Only (Whisper)")
+        is_replace_mode = (pipeline_mode == "Replace Subs (Full)")
 
         total_videos = len(self.video_paths)
 
         try:
             self._log(f"🚀  System: GPU Accelerated (RTX 3050 Check)")
-            if is_audio_mode:
+            if is_replace_mode:
+                self._log("🚀  Engine: Replace Subs — Inpaint + Whisper (medium)")
+            elif is_audio_mode:
                 self._log(f"🚀  Engine: Audio Transcription (Whisper {whisper_model})")
             else:
                 self._log("🚀  Engine: Advanced Selective Inpainting (v4)")
@@ -430,7 +435,14 @@ class App(ctk.CTk):
                     self._log(f"   {msg}")
                     self._update_progress_from_msg(msg, _idx, total_videos)
 
-                if is_audio_mode:
+                if is_replace_mode:
+                    result = run_replace_subs_pipeline(
+                        video_path,
+                        target_code,
+                        translator_model=translator_model,
+                        progress_callback=progress_cb,
+                    )
+                elif is_audio_mode:
                     result = run_audio_pipeline(
                         video_path,
                         target_code,
@@ -497,11 +509,17 @@ class App(ctk.CTk):
                     elif "Translating" in msg:
                         # 30-45% of the video's share
                         overall = base_overall + (0.3 * video_share) + (step_pct * 0.15 * video_share)
+                    elif "Inpainting" in msg and "Rendering" in msg:
+                        # Replace Subs mode: Inpainting & Rendering combined step (20-50%)
+                        overall = base_overall + (0.20 * video_share) + (step_pct * 0.30 * video_share)
                     elif "Inpainting" in msg or "Rendering" in msg:
-                        # 45-100% of the video's share
-                        overall = base_overall + (0.45 * video_share) + (step_pct * 0.55 * video_share)
+                        # OCR mode: 45-100% / Replace Subs render: 85-100%
+                        if "Rendering subtitles" in msg:
+                            overall = base_overall + (0.85 * video_share) + (step_pct * 0.15 * video_share)
+                        else:
+                            overall = base_overall + (0.45 * video_share) + (step_pct * 0.55 * video_share)
                     elif "Transcribing" in msg:
-                        # 0-50% for audio mode
+                        # Audio/Replace mode: transcription phase
                         overall = base_overall + (step_pct * 0.5 * video_share)
                     else:
                         overall = base_overall + (step_pct * video_share)
