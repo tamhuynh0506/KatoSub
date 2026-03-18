@@ -159,8 +159,8 @@ Guidelines:
 
         if all_texts and len(all_texts) > 0:
             prompt += "--- REFERENCE CONTEXT (Full Transcript) ---\n"
-            prompt += "Use this context to understand the story, characters, and tone:\n"
-            prompt += " ".join([t.replace('\n', ' ') for t in all_texts[:50]])
+            prompt += "The following is the full video transcript to help you establish a 'Terminology Memory'. Use this context to ensure the same translations for names and special terms are used consistently, and to understand the story, character relationships, and tone:\n"
+            prompt += " ".join([t.replace('\n', ' ') for t in all_texts])
             prompt += "\n--------------------------\n\n"
 
         prompt += f"--- TEXTS TO TRANSLATE NOW (return exactly {len(texts)} strings) ---\n"

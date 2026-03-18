@@ -411,6 +411,8 @@ class App(ctk.CTk):
         is_replace_mode = (pipeline_mode == "Replace Subs (Full)")
 
         total_videos = len(self.video_paths)
+        
+        output_dir = self.output_entry.get().strip() or None
 
         try:
             self._log(f"🚀  System: GPU Accelerated (RTX 3050 Check)")
@@ -441,6 +443,7 @@ class App(ctk.CTk):
                         target_code,
                         translator_model=translator_model,
                         progress_callback=progress_cb,
+                        output_dir=output_dir,
                     )
                 elif is_audio_mode:
                     result = run_audio_pipeline(
@@ -449,6 +452,7 @@ class App(ctk.CTk):
                         translator_model=translator_model,
                         whisper_model=whisper_model,
                         progress_callback=progress_cb,
+                        output_dir=output_dir,
                     )
                 else:
                     # Logic strictly for v4 pipeline
@@ -456,7 +460,8 @@ class App(ctk.CTk):
                         video_path, 
                         target_code,
                         translator_model=translator_model,
-                        progress_callback=progress_cb
+                        progress_callback=progress_cb,
+                        output_dir=output_dir,
                     )
 
                 if result:

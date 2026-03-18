@@ -110,8 +110,10 @@ def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=No
         audio_path,
         verbose=False,
         word_timestamps=True,           # More precise timing per word
-        no_speech_threshold=0.6,        # Better silence filtering
+        no_speech_threshold=0.4,        # LOWERED: Less aggressive at discarding quiet speech
         condition_on_previous_text=True, # Better context continuity
+        beam_size=5,                    # Evaluate more paths to prevent hallucination drops
+        initial_prompt="Hello, welcome to my video. Let's get started, okay? This is a test. Wait, what did you say?", # Force punctuation and sentence structure
     )
     transcribe_time = time.time() - start_time
 
@@ -174,7 +176,7 @@ def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=No
     return srt_content, detected_lang
 
 
-def render_subtitles(video_path, srt_content, progress_callback=None):
+def render_subtitles(video_path, srt_content, progress_callback=None, output_dir=None):
     """Render translated subtitles onto the video using FFmpeg (no inpainting needed)."""
     def _log(msg):
         if progress_callback:
@@ -184,8 +186,15 @@ def render_subtitles(video_path, srt_content, progress_callback=None):
         _log("No subtitles to render!")
         return video_path
 
-    output_path = video_path.rsplit(".", 1)[0] + "_audio_translated.mp4"
-    temp_srt_path = video_path.rsplit(".", 1)[0] + "_audio_translated.srt"
+    base_name = os.path.basename(video_path)
+    name_without_ext = os.path.splitext(base_name)[0]
+
+    if output_dir:
+        output_path = os.path.join(output_dir, name_without_ext + "_audio_translated.mp4")
+        temp_srt_path = os.path.join(output_dir, name_without_ext + "_audio_translated.srt")
+    else:
+        output_path = video_path.rsplit(".", 1)[0] + "_audio_translated.mp4"
+        temp_srt_path = video_path.rsplit(".", 1)[0] + "_audio_translated.srt"
 
     # Write SRT with UTF-8 BOM for FFmpeg compatibility
     with open(temp_srt_path, "w", encoding="utf-8-sig") as f:
@@ -290,7 +299,7 @@ def render_subtitles(video_path, srt_content, progress_callback=None):
 
 
 def run_audio_pipeline(video_path, target_lang, translator_model="google",
-                       whisper_model="base", progress_callback=None):
+                       whisper_model="base", progress_callback=None, output_dir=None):
     """
     Full audio transcription + translation pipeline:
     1. Extract audio from video
@@ -325,8 +334,15 @@ def run_audio_pipeline(video_path, target_lang, translator_model="google",
         return None
 
     # Save original transcription SRT for debugging
-    base = video_path.rsplit(".", 1)[0]
-    debug_original = base + "_debug_whisper_original.srt"
+    base_name = os.path.basename(video_path)
+    name_without_ext = os.path.splitext(base_name)[0]
+
+    if output_dir:
+        debug_original = os.path.join(output_dir, name_without_ext + "_debug_whisper_original.srt")
+    else:
+        base = video_path.rsplit(".", 1)[0]
+        debug_original = base + "_debug_whisper_original.srt"
+
     with open(debug_original, "w", encoding="utf-8") as f:
         f.write(srt_content)
     _log(f"   Debug: Whisper SRT saved as {os.path.basename(debug_original)}")
@@ -342,14 +358,18 @@ def run_audio_pipeline(video_path, target_lang, translator_model="google",
         translated_srt = srt_content
 
     # Save translated SRT for debugging
-    debug_translated = base + "_debug_whisper_translated.srt"
+    if output_dir:
+        debug_translated = os.path.join(output_dir, name_without_ext + "_debug_whisper_translated.srt")
+    else:
+        debug_translated = video_path.rsplit(".", 1)[0] + "_debug_whisper_translated.srt"
+
     with open(debug_translated, "w", encoding="utf-8") as f:
         f.write(translated_srt)
     _log(f"   Debug: Translated SRT saved as {os.path.basename(debug_translated)}")
 
     # --- Step 4: Render subtitles ---
     _log("Step 4/4: Rendering subtitles onto video...")
-    result = render_subtitles(video_path, translated_srt, progress_callback)
+    result = render_subtitles(video_path, translated_srt, progress_callback, output_dir=output_dir)
 
     elapsed = time.time() - overall_start
     if result:

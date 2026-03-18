@@ -143,7 +143,7 @@ class SelectiveInpaintPipe:
         cap.release()
         return ocr_history, fps
 
-    def inpaint_and_render(self, video_path, ocr_history, translated_srt, progress_callback=None):
+    def inpaint_and_render(self, video_path, ocr_history, translated_srt, progress_callback=None, output_dir=None):
         """Pass 2 & 3 Combined: Selective Inpainting + Final Encoding using 3-Tier Threading."""
         import queue
         import threading
@@ -155,7 +155,17 @@ class SelectiveInpaintPipe:
         
         # Write SRT with UTF-8 BOM for FFmpeg compatibility
         has_srt = bool(translated_srt and translated_srt.strip())
-        temp_srt_path = video_path.replace(".mp4", "_v4_translated.srt")
+        
+        base_name = os.path.basename(video_path)
+        name_without_ext = os.path.splitext(base_name)[0]
+        
+        if output_dir:
+            temp_srt_path = os.path.join(output_dir, name_without_ext + "_v4_translated.srt")
+            output_path = os.path.join(output_dir, name_without_ext + "_v4_final.mp4")
+        else:
+            temp_srt_path = video_path.replace(".mp4", "_v4_translated.srt")
+            output_path = video_path.replace(".mp4", "_v4_final.mp4")
+            
         if has_srt:
             with open(temp_srt_path, "w", encoding="utf-8-sig") as f:
                 f.write(translated_srt)
@@ -167,8 +177,6 @@ class SelectiveInpaintPipe:
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = cap.get(cv2.CAP_PROP_FPS)
         w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        
-        output_path = video_path.replace(".mp4", "_v4_final.mp4")
         
         frame_to_boxes = {}
         for seg in ocr_history:
@@ -315,7 +323,7 @@ class SelectiveInpaintPipe:
         
         return result
 
-def run_v4(video_path, target_lang, translator_model="google", progress_callback=None):
+def run_v4(video_path, target_lang, translator_model="google", progress_callback=None, output_dir=None):
     def _log(msg):
         if progress_callback: progress_callback(msg)
     
@@ -347,5 +355,5 @@ def run_v4(video_path, target_lang, translator_model="google", progress_callback
         f.write(translated_srt)
     _log(f"   📄 Debug SRTs saved: _debug_original.srt & _debug_translated.srt")
     
-    return pipe.inpaint_and_render(video_path, segments, translated_srt, progress_callback)
+    return pipe.inpaint_and_render(video_path, segments, translated_srt, progress_callback, output_dir=output_dir)
 
