@@ -60,7 +60,6 @@ def run_replace_subs_pipeline(
     translator_model: str = "google",
     progress_callback=None,
     output_dir=None,
-    watermark_regions=None,
 ) -> str | None:
     """
     Full "Replace Subs" pipeline.
@@ -99,7 +98,6 @@ def run_replace_subs_pipeline(
     # Pass empty SRT so no new subs are overlaid during inpainting
     clean_video = pipe.inpaint_and_render(
         video_path, segments, translated_srt="", progress_callback=progress_callback,
-        watermark_regions=watermark_regions
     )
 
     # Free inpainting model from GPU before loading Whisper

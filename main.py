@@ -116,23 +116,13 @@ class App(ctk.CTk):
         self.pipeline_mode_var = ctk.StringVar(value="Hardcoded Subs (OCR)")
         ctk.CTkOptionMenu(
             sidebar, variable=self.pipeline_mode_var,
-            values=["Hardcoded Subs (OCR)", "Audio Only (Whisper)", "Replace Subs (Full)"],
+            values=["Hardcoded Subs (OCR)", "Audio Only (Whisper)", "Replace Subs (Full)", "Watermark Removal"],
             fg_color=COLORS["card"], button_color=COLORS["accent"],
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["card"],
             width=180,
             command=self._on_pipeline_mode_change,
         ).grid(row=3, column=0, padx=20, pady=(0, 8), sticky="w")
-        
-        self.remove_watermarks_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(
-            sidebar, text="Auto-Remove Watermarks",
-            variable=self.remove_watermarks_var,
-            font=(FONT_FAMILY, 12, "bold"),
-            fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"],
-            text_color=COLORS["text_primary"]
-        ).grid(row=4, column=0, padx=20, pady=(0, 10), sticky="w")
 
         # ── Whisper Model (shown only for Audio mode) ──
         self.whisper_label = ctk.CTkLabel(
@@ -420,6 +410,7 @@ class App(ctk.CTk):
         whisper_model = self.whisper_model_var.get()
         is_audio_mode = (pipeline_mode == "Audio Only (Whisper)")
         is_replace_mode = (pipeline_mode == "Replace Subs (Full)")
+        is_watermark_mode = (pipeline_mode == "Watermark Removal")
 
         total_videos = len(self.video_paths)
         
@@ -427,7 +418,9 @@ class App(ctk.CTk):
 
         try:
             self._log(f"🚀  System: GPU Accelerated (RTX 3050 Check)")
-            if is_replace_mode:
+            if is_watermark_mode:
+                self._log("🚀  Engine: AI Watermark Removal (LaMa Inpainting + NVENC)")
+            elif is_replace_mode:
                 self._log("🚀  Engine: Replace Subs — Inpaint + Whisper (medium)")
             elif is_audio_mode:
                 self._log(f"🚀  Engine: Audio Transcription (Whisper {whisper_model})")
@@ -448,27 +441,19 @@ class App(ctk.CTk):
                     self._log(f"   {msg}")
                     self._update_progress_from_msg(msg, _idx, total_videos)
 
-                # --- 1. Optional Watermark Pre-processing (Detection Only) ---
-                watermark_regions = None
-                if self.remove_watermarks_var.get():
-                    from watermark_detector import WatermarkDetector
-                    self._log(f"   🌊  Scanning for watermarks (Quick Pass)...")
-                    detector = WatermarkDetector()
-                    watermark_regions = detector.detect(video_path, progress_callback=progress_cb)
-                    if watermark_regions:
-                        self._log(f"   ✨  Found {len(watermark_regions)} watermark(s) - will remove in single pass.")
-                    else:
-                        self._log(f"   ℹ️  No watermarks detected.")
-
-                # --- 2. Main Selected Pipeline (Single Pass Inpainting) ---
-                if is_replace_mode:
+                if is_watermark_mode:
+                    result = run_watermark_pipeline(
+                        video_path,
+                        progress_callback=progress_cb,
+                        output_dir=output_dir,
+                    )
+                elif is_replace_mode:
                     result = run_replace_subs_pipeline(
                         video_path,
                         target_code,
                         translator_model=translator_model,
                         progress_callback=progress_cb,
                         output_dir=output_dir,
-                        watermark_regions=watermark_regions
                     )
                 elif is_audio_mode:
                     result = run_audio_pipeline(
@@ -478,18 +463,15 @@ class App(ctk.CTk):
                         whisper_model=whisper_model,
                         progress_callback=progress_cb,
                         output_dir=output_dir,
-                        watermark_regions=watermark_regions
                     )
                 else:
                     # Logic strictly for v4 pipeline
-                    from pipeline_v4 import run_v4
                     result = run_v4(
                         video_path, 
                         target_code,
                         translator_model=translator_model,
                         progress_callback=progress_cb,
                         output_dir=output_dir,
-                        watermark_regions=watermark_regions
                     )
 
                 if result:

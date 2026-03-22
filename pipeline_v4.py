@@ -143,7 +143,7 @@ class SelectiveInpaintPipe:
         cap.release()
         return ocr_history, fps
 
-    def inpaint_and_render(self, video_path, ocr_history, translated_srt, progress_callback=None, output_dir=None, watermark_regions=None):
+    def inpaint_and_render(self, video_path, ocr_history, translated_srt, progress_callback=None, output_dir=None):
         """Pass 2 & 3 Combined: Selective Inpainting + Final Encoding using 3-Tier Threading."""
         import queue
         import threading
@@ -231,20 +231,15 @@ class SelectiveInpaintPipe:
                     break
                 
                 idx, frame, boxes = item
-                
-                # Combine subtitle boxes (OCR) and watermark regions
-                all_to_inpaint = []
                 if boxes:
-                    all_to_inpaint.extend(boxes)
-                
-                if watermark_regions:
-                    active_wm = [r for r in watermark_regions if r.start_frame <= idx <= r.end_frame]
-                    for r in active_wm:
-                        all_to_inpaint.append(r.box_points)
-                
-                if all_to_inpaint:
-                    # AIInpainter.inpaint_frame handles ROI/cropping internally
-                    frame = self.inpainter.inpaint_frame(frame, all_to_inpaint)
+                    roi_height = int(h * self.region_ratio)
+                    roi_top_clean = h - roi_height
+                    roi = frame[roi_top_clean:, :]
+                    if roi.size > 0:
+                        local_boxes = [[[p[0], p[1]-roi_top_clean] for p in b] for b in boxes]
+                        inpainted_roi = self.inpainter.inpaint_frame(roi, local_boxes)
+                        hr, wr = roi.shape[:2]
+                        frame[roi_top_clean:, :] = inpainted_roi[:hr, :wr]
                 
                 write_queue.put(frame.tobytes())
                 with frames_done_lock:
@@ -328,7 +323,7 @@ class SelectiveInpaintPipe:
         
         return result
 
-def run_v4(video_path, target_lang, translator_model="google", progress_callback=None, output_dir=None, watermark_regions=None):
+def run_v4(video_path, target_lang, translator_model="google", progress_callback=None, output_dir=None):
     def _log(msg):
         if progress_callback: progress_callback(msg)
     
@@ -360,5 +355,5 @@ def run_v4(video_path, target_lang, translator_model="google", progress_callback
         f.write(translated_srt)
     _log(f"   📄 Debug SRTs saved: _debug_original.srt & _debug_translated.srt")
     
-    return pipe.inpaint_and_render(video_path, segments, translated_srt, progress_callback, output_dir=output_dir, watermark_regions=watermark_regions)
+    return pipe.inpaint_and_render(video_path, segments, translated_srt, progress_callback, output_dir=output_dir)
 

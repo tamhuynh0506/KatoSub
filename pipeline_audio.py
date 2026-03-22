@@ -4,7 +4,6 @@ import subprocess
 import whisper
 import cv2
 from ai_translator import AITranslator
-from pipeline_v4 import SelectiveInpaintPipe
 
 
 def format_eta(seconds):
@@ -300,7 +299,7 @@ def render_subtitles(video_path, srt_content, progress_callback=None, output_dir
 
 
 def run_audio_pipeline(video_path, target_lang, translator_model="google",
-                       whisper_model="base", progress_callback=None, output_dir=None, watermark_regions=None):
+                       whisper_model="base", progress_callback=None, output_dir=None):
     """
     Full audio transcription + translation pipeline:
     1. Extract audio from video
@@ -330,62 +329,47 @@ def run_audio_pipeline(video_path, target_lang, translator_model="google",
     if os.path.exists(audio_path):
         os.remove(audio_path)
 
-    if not srt_content.strip() and not watermark_regions:
-        _log("No speech detected and no watermarks to remove. Skipping.")
+    if not srt_content.strip():
+        _log("No speech detected. Skipping translation and rendering.")
         return None
-    
-    if srt_content.strip():
-        # Save original transcription SRT for debugging
-        base_name = os.path.basename(video_path)
-        name_without_ext = os.path.splitext(base_name)[0]
 
-        if output_dir:
-            debug_original = os.path.join(output_dir, name_without_ext + "_debug_whisper_original.srt")
-        else:
-            base = video_path.rsplit(".", 1)[0]
-            debug_original = base + "_debug_whisper_original.srt"
+    # Save original transcription SRT for debugging
+    base_name = os.path.basename(video_path)
+    name_without_ext = os.path.splitext(base_name)[0]
 
-        with open(debug_original, "w", encoding="utf-8") as f:
-            f.write(srt_content)
-        _log(f"   Debug: Whisper SRT saved as {os.path.basename(debug_original)}")
-
-        # --- Step 3: Translate ---
-        _log(f"Step 3/4: Translating to {target_lang}...")
-        translator = AITranslator(model=translator_model)
-        translated_srt = translator.translate_srt_content(srt_content, target_lang, progress_callback=progress_callback)
-        translator.unload()
-
-        if not translated_srt or not translated_srt.strip():
-            _log("Translation returned empty result. Using original transcription.")
-            translated_srt = srt_content
-
-        # Save translated SRT for debugging
-        if output_dir:
-            debug_translated = os.path.join(output_dir, name_without_ext + "_debug_whisper_translated.srt")
-        else:
-            debug_translated = video_path.rsplit(".", 1)[0] + "_debug_whisper_translated.srt"
-
-        with open(debug_translated, "w", encoding="utf-8") as f:
-            f.write(translated_srt)
-        _log(f"   Debug: Translated SRT saved as {os.path.basename(debug_translated)}")
+    if output_dir:
+        debug_original = os.path.join(output_dir, name_without_ext + "_debug_whisper_original.srt")
     else:
-        translated_srt = ""
+        base = video_path.rsplit(".", 1)[0]
+        debug_original = base + "_debug_whisper_original.srt"
+
+    with open(debug_original, "w", encoding="utf-8") as f:
+        f.write(srt_content)
+    _log(f"   Debug: Whisper SRT saved as {os.path.basename(debug_original)}")
+
+    # --- Step 3: Translate ---
+    _log(f"Step 3/4: Translating to {target_lang}...")
+    translator = AITranslator(model=translator_model)
+    translated_srt = translator.translate_srt_content(srt_content, target_lang, progress_callback=progress_callback)
+    translator.unload()
+
+    if not translated_srt or not translated_srt.strip():
+        _log("Translation returned empty result. Using original transcription.")
+        translated_srt = srt_content
+
+    # Save translated SRT for debugging
+    if output_dir:
+        debug_translated = os.path.join(output_dir, name_without_ext + "_debug_whisper_translated.srt")
+    else:
+        debug_translated = video_path.rsplit(".", 1)[0] + "_debug_whisper_translated.srt"
+
+    with open(debug_translated, "w", encoding="utf-8") as f:
+        f.write(translated_srt)
+    _log(f"   Debug: Translated SRT saved as {os.path.basename(debug_translated)}")
 
     # --- Step 4: Render subtitles ---
-    if watermark_regions:
-        _log("Step 4/4: Removing watermarks and rendering subtitles (AI Inpainting Pass)...")
-        pipe = SelectiveInpaintPipe()
-        result = pipe.inpaint_and_render(
-            video_path, 
-            ocr_history=[], 
-            translated_srt=translated_srt, 
-            progress_callback=progress_callback, 
-            output_dir=output_dir,
-            watermark_regions=watermark_regions
-        )
-    else:
-        _log("Step 4/4: Rendering subtitles onto video (FFmpeg Passthrough)...")
-        result = render_subtitles(video_path, translated_srt, progress_callback, output_dir=output_dir)
+    _log("Step 4/4: Rendering subtitles onto video...")
+    result = render_subtitles(video_path, translated_srt, progress_callback, output_dir=output_dir)
 
     elapsed = time.time() - overall_start
     if result:
