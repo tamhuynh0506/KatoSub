@@ -170,3 +170,5 @@ output.txt
 *.flv
 *.webm
 !README.md
+
+test/*

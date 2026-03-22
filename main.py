@@ -13,6 +13,7 @@ import threading
 from pipeline_v4 import run_v4
 from pipeline_audio import run_audio_pipeline
 from pipeline_replace_subs import run_replace_subs_pipeline
+from pipeline_watermark import run_watermark_pipeline
 
 # ─── Color Palette & Theme ───────────────────────────────────────────────────
 
@@ -115,7 +116,7 @@ class App(ctk.CTk):
         self.pipeline_mode_var = ctk.StringVar(value="Hardcoded Subs (OCR)")
         ctk.CTkOptionMenu(
             sidebar, variable=self.pipeline_mode_var,
-            values=["Hardcoded Subs (OCR)", "Audio Only (Whisper)", "Replace Subs (Full)"],
+            values=["Hardcoded Subs (OCR)", "Audio Only (Whisper)", "Replace Subs (Full)", "Watermark Removal"],
             fg_color=COLORS["card"], button_color=COLORS["accent"],
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["card"],
@@ -409,6 +410,7 @@ class App(ctk.CTk):
         whisper_model = self.whisper_model_var.get()
         is_audio_mode = (pipeline_mode == "Audio Only (Whisper)")
         is_replace_mode = (pipeline_mode == "Replace Subs (Full)")
+        is_watermark_mode = (pipeline_mode == "Watermark Removal")
 
         total_videos = len(self.video_paths)
         
@@ -416,7 +418,9 @@ class App(ctk.CTk):
 
         try:
             self._log(f"🚀  System: GPU Accelerated (RTX 3050 Check)")
-            if is_replace_mode:
+            if is_watermark_mode:
+                self._log("🚀  Engine: AI Watermark Removal (LaMa Inpainting + NVENC)")
+            elif is_replace_mode:
                 self._log("🚀  Engine: Replace Subs — Inpaint + Whisper (medium)")
             elif is_audio_mode:
                 self._log(f"🚀  Engine: Audio Transcription (Whisper {whisper_model})")
@@ -437,7 +441,13 @@ class App(ctk.CTk):
                     self._log(f"   {msg}")
                     self._update_progress_from_msg(msg, _idx, total_videos)
 
-                if is_replace_mode:
+                if is_watermark_mode:
+                    result = run_watermark_pipeline(
+                        video_path,
+                        progress_callback=progress_cb,
+                        output_dir=output_dir,
+                    )
+                elif is_replace_mode:
                     result = run_replace_subs_pipeline(
                         video_path,
                         target_code,
