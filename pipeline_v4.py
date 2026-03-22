@@ -314,7 +314,7 @@ class SelectiveInpaintPipe:
         _log(f"   Generated {len(blocks)} SRT blocks for translation")
         
         translator = AITranslator(model=translator_model)
-        result = translator.translate_srt_content(srt_content, target_lang)
+        result = translator.translate_srt_content(srt_content, target_lang, progress_callback=progress_callback)
         translator.unload()
         
         # Debug: Count translated vs original in result

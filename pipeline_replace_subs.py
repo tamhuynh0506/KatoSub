@@ -59,6 +59,7 @@ def run_replace_subs_pipeline(
     target_lang: str,
     translator_model: str = "google",
     progress_callback=None,
+    output_dir=None,
 ) -> str | None:
     """
     Full "Replace Subs" pipeline.
@@ -86,8 +87,11 @@ def run_replace_subs_pipeline(
         _log("   ⚠ No existing subtitles detected — skipping inpainting, "
              "falling back to audio-only flow.")
         # Fast-path: behave like audio-only pipeline
-        return _audio_only_fallback(video_path, target_lang,
-                                    translator_model, progress_callback)
+        return _audio_only_fallback(
+            video_path, target_lang,
+            translator_model, progress_callback,
+            output_dir=output_dir
+        )
 
     # ── Step 2/6: Inpaint (remove old subs) ──────────────────────────────
     _log("Step 2/6: Removing old subtitles (AI Inpainting)...")
@@ -134,7 +138,7 @@ def run_replace_subs_pipeline(
     _log(f"Step 5/6: Translating to {target_lang}...")
     translator = AITranslator(model=translator_model)
     translated_srt = translator.translate_srt_content(
-        srt_content, target_lang, progress_callback=progress_callback,
+        srt_content, target_lang, progress_callback=progress_callback
     )
     translator.unload()
 
@@ -147,7 +151,7 @@ def run_replace_subs_pipeline(
 
     # ── Step 6/6: Render new subs onto clean video ───────────────────────
     _log("Step 6/6: Rendering new subtitles onto clean video...")
-    final_output = render_subtitles(clean_video, translated_srt, progress_callback)
+    final_output = render_subtitles(clean_video, translated_srt, progress_callback, output_dir=output_dir)
 
     # Clean up the intermediate inpainted video (keep only final)
     if final_output and os.path.exists(final_output) and final_output != clean_video:
@@ -164,7 +168,7 @@ def run_replace_subs_pipeline(
 
 # ─── Internal helpers ─────────────────────────────────────────────────────────
 
-def _audio_only_fallback(video_path, target_lang, translator_model, progress_callback):
+def _audio_only_fallback(video_path, target_lang, translator_model, progress_callback, output_dir=None):
     """When no existing subs are detected, just run the audio pipeline."""
     from pipeline_audio import run_audio_pipeline
     return run_audio_pipeline(
@@ -172,6 +176,7 @@ def _audio_only_fallback(video_path, target_lang, translator_model, progress_cal
         translator_model=translator_model,
         whisper_model="medium",
         progress_callback=progress_callback,
+        output_dir=output_dir,
     )
 
 

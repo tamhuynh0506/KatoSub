@@ -68,8 +68,8 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("VietSub — Video Subtitle Translator")
-        self.geometry("960x700")
-        self.minsize(860, 620)
+        self.geometry("960x780")
+        self.minsize(860, 720)
         self.configure(fg_color=COLORS["bg_dark"])
 
         self.video_paths = []
