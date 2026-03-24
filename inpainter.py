@@ -100,14 +100,23 @@ class AIInpainter:
             if roi.size == 0:
                 continue
                 
-            # 3. Create mask for the ROI
-            mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+            # 3. Create a SURGICAL mask for the ROI
+            # Instead of a solid rectangle, we find the actual bright text pixels.
+            # This preserves faces/objects that are visible BETWEEN the letters.
+            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
             
-            # Remap box to ROI coordinates
+            # Threshold to find bright text (watermarks are usually white/light gray)
+            _, mask_text = cv2.threshold(gray_roi, 160, 255, cv2.THRESH_BINARY)
+            
+            # Create a box mask to constrain the thresholding to just the watermark area
+            box_mask = np.zeros(roi.shape[:2], dtype=np.uint8)
             roi_pts = np.array([[p[0] - x_start, p[1] - y_start] for p in box], dtype=np.int32)
-            cv2.fillPoly(mask, [roi_pts], 255)
+            cv2.fillPoly(box_mask, [roi_pts], 255)
             
-            # Apply dilation to the mask — keep it tight so LaMa has clean context
+            # Final mask is only the bright pixels INSIDE the bounding box
+            mask = cv2.bitwise_and(mask_text, box_mask)
+            
+            # Dilate the text pixels slightly to cover anti-aliasing and shadows
             kernel = np.ones((5, 5), np.uint8)
             mask = cv2.dilate(mask, kernel, iterations=2)
             
@@ -122,9 +131,9 @@ class AIInpainter:
                 roi_h = y_end - y_start
                 roi_w = x_end - x_start
 
-                # Blur the mask heavily so edges fade smoothly
+                # Blur the mask slightly for a natural seam.
                 weight = mask[:roi_h, :roi_w].astype(np.float32) / 255.0
-                weight = cv2.GaussianBlur(weight, (0, 0), 12.0)
+                weight = cv2.GaussianBlur(weight, (0, 0), 3.0)
                 weight = np.clip(weight, 0.0, 1.0)
                 weight3 = weight[:, :, np.newaxis]  # broadcast over BGR
 
