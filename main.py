@@ -494,9 +494,10 @@ class App(ctk.CTk):
                 self.after(0, lambda: messagebox.showinfo("Success", "All videos processed!"))
 
         except Exception as e:
-            self._update_status(f"Error: {e}")
-            self._log(f"\n❌  Error: {e}")
-            self.after(0, lambda: messagebox.showerror("Error", str(e)))
+            err_msg = str(e)
+            self._update_status(f"Error: {err_msg}")
+            self._log(f"\n❌  Error: {err_msg}")
+            self.after(0, lambda em=err_msg: messagebox.showerror("Error", em))
 
         finally:
             self.is_processing = False

@@ -70,55 +70,69 @@ class AIInpainter:
     def inpaint_frame(self, frame, boxes):
         """
         Inpaint a single frame with selective cropping for performance.
+        Now processes each box individually to prevent massive ROI memory blowouts
+        when watermarks are far apart on the screen.
         """
         if not boxes:
             return frame
         
         self._ensure_lama()
         
-        # 1. Calculate the bounding box of all subtitle boxes in this frame
-        # We add some padding to ensure the AI has context
-        all_pts = []
-        for box in boxes:
-            all_pts.extend(box)
-        all_pts = np.array(all_pts, dtype=np.int32)
-        
-        x_min, y_min = np.min(all_pts, axis=0)
-        x_max, y_max = np.max(all_pts, axis=0)
-        
-        # Add padding (e.g. 20px)
-        pad = 20
+        # Copy the frame so we can iteratively update it
+        # We process each box sequentially.
         h_f, w_f = frame.shape[:2]
-        x_start = max(0, int(x_min) - pad)
-        y_start = max(0, int(y_min) - pad)
-        x_end = min(w_f, int(x_max) + pad)
-        y_end = min(h_f, int(y_max) + pad)
         
-        # 2. Extract the cropped ROI
-        roi = frame[y_start:y_end, x_start:x_end]
-        if roi.size == 0:
-            return frame
-            
-        # 3. Create mask for the ROI
-        mask = np.zeros(roi.shape[:2], dtype=np.uint8)
-        # Remap boxes to ROI coordinates
         for box in boxes:
-            pts = np.array([[p[0] - x_start, p[1] - y_start] for p in box], dtype=np.int32)
-            cv2.fillPoly(mask, [pts], 255)
-        
-        # Apply dilation to the mask
-        kernel = np.ones((7, 7), np.uint8)
-        mask = cv2.dilate(mask, kernel, iterations=3)
-        
-        # 4. Inpaint the ROI
-        try:
-            roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-            result_pil = self._lama_wrapper(roi_rgb, mask)
-            result_roi = cv2.cvtColor(np.array(result_pil), cv2.COLOR_RGB2BGR)
+            pts = np.array(box, dtype=np.int32)
             
-            # 5. Paste back into original frame
-            frame[y_start:y_end, x_start:x_end] = result_roi[:(y_end-y_start), :(x_end-x_start)]
-            return frame
-        except Exception as e:
-            print(f"AI Inpainting error: {e}")
-            return frame
+            x_min, y_min = np.min(pts, axis=0)
+            x_max, y_max = np.max(pts, axis=0)
+            
+            # Larger padding gives LaMa more background context → better reconstruction
+            pad = 60
+            x_start = max(0, int(x_min) - pad)
+            y_start = max(0, int(y_min) - pad)
+            x_end = min(w_f, int(x_max) + pad)
+            y_end = min(h_f, int(y_max) + pad)
+            
+            # 2. Extract the cropped ROI
+            roi = frame[y_start:y_end, x_start:x_end]
+            if roi.size == 0:
+                continue
+                
+            # 3. Create mask for the ROI
+            mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+            
+            # Remap box to ROI coordinates
+            roi_pts = np.array([[p[0] - x_start, p[1] - y_start] for p in box], dtype=np.int32)
+            cv2.fillPoly(mask, [roi_pts], 255)
+            
+            # Apply dilation to the mask — keep it tight so LaMa has clean context
+            kernel = np.ones((5, 5), np.uint8)
+            mask = cv2.dilate(mask, kernel, iterations=2)
+            
+            # 4. Inpaint the ROI
+            try:
+                roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+                result_pil = self._lama_wrapper(roi_rgb, mask)
+                result_roi = cv2.cvtColor(np.array(result_pil), cv2.COLOR_RGB2BGR)
+                result_roi = result_roi[:(y_end - y_start), :(x_end - x_start)]
+
+                # 5. Feather-blend the inpainted region back into the frame.
+                roi_h = y_end - y_start
+                roi_w = x_end - x_start
+
+                # Blur the mask heavily so edges fade smoothly
+                weight = mask[:roi_h, :roi_w].astype(np.float32) / 255.0
+                weight = cv2.GaussianBlur(weight, (0, 0), 12.0)
+                weight = np.clip(weight, 0.0, 1.0)
+                weight3 = weight[:, :, np.newaxis]  # broadcast over BGR
+
+                original_roi = frame[y_start:y_end, x_start:x_end].astype(np.float32)
+                inpainted_roi = result_roi.astype(np.float32)
+                blended = original_roi * (1.0 - weight3) + inpainted_roi * weight3
+                frame[y_start:y_end, x_start:x_end] = np.clip(blended, 0, 255).astype(np.uint8)
+            except Exception as e:
+                print(f"AI Inpainting error on box: {e}")
+                
+        return frame

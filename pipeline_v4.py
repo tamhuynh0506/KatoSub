@@ -2,7 +2,6 @@ import cv2
 import os
 import time
 import subprocess
-import easyocr
 from srt_utils import frames_to_srt, get_stabilized_segments
 
 def format_eta(seconds):
@@ -11,7 +10,6 @@ def format_eta(seconds):
     else:
         return f"{(int(seconds // 60)):02}:{(int(seconds % 60)):02}"
 from ai_translator import AITranslator
-from inpainter import AIInpainter
 
 class SelectiveInpaintPipe:
     def __init__(self):
@@ -26,10 +24,12 @@ class SelectiveInpaintPipe:
         except Exception as e:
             print(f"PaddleOCR Init failed: {e}. Falling back to EasyOCR.")
             self.use_paddle = False
+            import easyocr
             self.ocr_engine = easyocr.Reader(['en', 'es', 'vi'], gpu=True)
             print(f"DEBUG: V4 OCR Init with EasyOCR (GPU) - [en, es, vi]")
 
         # 2. Inpainter (LaMa)
+        from inpainter import AIInpainter
         self.inpainter = AIInpainter()
         
         self.region_ratio = 0.3 # Catch higher subs (like v2)

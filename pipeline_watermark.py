@@ -1,10 +1,10 @@
 """
-pipeline_watermark.py — High-Quality Watermark Removal Pipeline
+pipeline_watermark.py  High-Quality Watermark Removal Pipeline
 
 Steps:
   1. Detect watermark regions via WatermarkDetector (temporal variance analysis)
   2. Per-frame: call AIInpainter (LaMa) only on frames that fall within a watermark's
-     temporal range — skipping frames where no watermark is present.
+     temporal range  skipping frames where no watermark is present.
   3. Encode result with FFmpeg NVENC (GPU) for maximum speed.
 
 Multiple watermarks at different times are handled: for any given frame, only
@@ -19,10 +19,10 @@ import threading
 import subprocess
 import numpy as np
 
-from typing import Optional
+from typing import Optional, List, Callable
 
 from watermark_detector import WatermarkDetector, WatermarkRegion
-from inpainter import AIInpainter
+# from inpainter import AIInpainter
 
 
 def format_eta(seconds: float) -> str:
@@ -34,29 +34,28 @@ def format_eta(seconds: float) -> str:
 class WatermarkRemovalPipeline:
     """
     End-to-end pipeline:
-      detect → AI inpaint (LaMa) → NVENC encode
+      detect  AI inpaint (LaMa)  NVENC encode
     """
 
     def __init__(self):
         self.detector = WatermarkDetector(
-            sample_rate=0.04,      # sample 4 % of frames per segment
-            std_threshold=12.0,    # pixel std-dev below this → stable
-            min_brightness=18.0,   # ignore near-black stable pixels
-            min_area=400,          # ignore tiny blobs
-            n_segments=3,          # scan 3 temporal segments
-            margin=8,              # extra padding around each bbox
+            sample_rate=0.06,
+            min_area=250,
+            n_segments=6,
+            margin=8,
         )
-        self.inpainter = AIInpainter()
+        self.inpainter = None  # Deferred initialization
 
-    # ──────────────────────────────────────────────────────────────────────
+    # 
     # Public entry point
-    # ──────────────────────────────────────────────────────────────────────
+    # 
 
     def run(
         self,
         video_path: str,
         progress_callback=None,
         output_dir: Optional[str] = None,
+        regions: Optional[List[WatermarkRegion]] = None,
     ) -> str:
         """
         Detect and remove watermarks from *video_path*.
@@ -66,27 +65,34 @@ class WatermarkRemovalPipeline:
             if progress_callback:
                 progress_callback(msg)
 
-        _log("🎯 Watermark Removal Pipeline started")
+        _log("Watermark Removal Pipeline started")
 
-        # ── Step 1: Detect ──────────────────────────────────────────────
-        regions = self.detector.detect(video_path, progress_callback=progress_callback)
+        #  Step 1: Detect 
+        if regions is None:
+            regions = self.detector.detect(video_path, progress_callback=progress_callback)
+        else:
+            _log(f"  Using {len(regions)} pre-determined watermark region(s)")
 
         if not regions:
-            _log("ℹ️  No watermarks detected — returning original video unchanged.")
+            _log("No watermarks detected -- returning original video unchanged.")
             return video_path
 
-        _log(f"🔎 Detected {len(regions)} watermark region(s) — starting AI inpainting")
+        _log(f"Detected {len(regions)} watermark region(s) -- starting AI inpainting")
 
-        # ── Step 2 + 3: Inpaint + Encode ───────────────────────────────
+        #  Step 2 + 3: Inpaint + Encode 
+        if self.inpainter is None:
+            from inpainter import AIInpainter
+            self.inpainter = AIInpainter()
+            
         output_path = self._build_output_path(video_path, output_dir)
         self._inpaint_and_encode(video_path, regions, output_path, _log)
 
-        _log(f"✅ Saved: {os.path.basename(output_path)}")
+        _log(f" Saved: {os.path.basename(output_path)}")
         return output_path
 
-    # ──────────────────────────────────────────────────────────────────────
+    # 
     # Internals
-    # ──────────────────────────────────────────────────────────────────────
+    # 
 
     @staticmethod
     def _build_output_path(video_path: str, output_dir: Optional[str]) -> str:
@@ -102,7 +108,7 @@ class WatermarkRemovalPipeline:
         return [r for r in regions if r.start_frame <= frame_idx <= r.end_frame]
 
     def _regions_to_boxes(self, active: list):
-        """Convert active WatermarkRegion list → inpainter boxes format."""
+        """Convert active WatermarkRegion list  inpainter boxes format."""
         return [r.box_points for r in active]
 
     def _inpaint_and_encode(
@@ -114,7 +120,7 @@ class WatermarkRemovalPipeline:
     ):
         """
         3-tier threaded pipeline (same architecture as pipeline_v4):
-          Producer → Processor(LaMa) → Consumer(FFmpeg NVENC)
+          Producer  Processor(LaMa)  Consumer(FFmpeg NVENC)
         """
         cap = cv2.VideoCapture(video_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -122,9 +128,9 @@ class WatermarkRemovalPipeline:
         w            = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h            = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        _log(f"📐 Video: {w}×{h} | {total_frames} frames @ {fps:.2f} fps")
+        _log(f" Video: {w}{h} | {total_frames} frames @ {fps:.2f} fps")
 
-        # ── FFmpeg NVENC encoder ──────────────────────────────────────
+        #  FFmpeg NVENC encoder 
         temp_video_path = output_path.replace(".mp4", "_temp.mp4")
         cmd = [
             "ffmpeg", "-y",
@@ -133,7 +139,7 @@ class WatermarkRemovalPipeline:
             "-i", "-",
             # High quality NVENC
             "-c:v", "h264_nvenc",
-            "-preset", "p5",          # Slow preset → better quality
+            "-preset", "p5",          # Slow preset  better quality
             "-cq", "25",
             "-b:v", "5M",
             "-maxrate", "20M",
@@ -141,14 +147,14 @@ class WatermarkRemovalPipeline:
             temp_video_path,
         ]
 
-        # ── Shared state ──────────────────────────────────────────────
+        #  Shared state 
         read_queue  = queue.Queue(maxsize=32)
         write_queue = queue.Queue(maxsize=32)
         stop_event  = threading.Event()
         frames_done = [0]
         done_lock   = threading.Lock()
 
-        # ── Producer ─────────────────────────────────────────────────
+        #  Producer 
         def producer():
             idx = 0
             while cap.isOpened() and not stop_event.is_set():
@@ -159,7 +165,7 @@ class WatermarkRemovalPipeline:
                 idx += 1
             read_queue.put(None)  # sentinel
 
-        # ── Processor (AI inpainting, GPU) ────────────────────────────
+        #  Processor (AI inpainting, GPU) 
         def processor():
             while not stop_event.is_set():
                 item = read_queue.get()
@@ -175,7 +181,7 @@ class WatermarkRemovalPipeline:
                     try:
                         frame = self.inpainter.inpaint_frame(frame, boxes)
                     except Exception as e:
-                        # Fall through — original frame is used
+                        # Fall through  original frame is used
                         _log(f"   Inpaint error on frame {idx}: {e}")
                         pass
 
@@ -183,7 +189,7 @@ class WatermarkRemovalPipeline:
                 with done_lock:
                     frames_done[0] = frames_done[0] + 1
 
-        # ── Consumer (write to FFmpeg stdin) ──────────────────────────
+        #  Consumer (write to FFmpeg stdin) 
         def consumer(pipe):
             try:
                 while not stop_event.is_set():
@@ -245,7 +251,8 @@ def run_watermark_pipeline(
     video_path: str,
     progress_callback=None,
     output_dir: Optional[str] = None,
+    regions: Optional[List[WatermarkRegion]] = None,
 ) -> str:
     """Convenience wrapper for main.py."""
     pipe = WatermarkRemovalPipeline()
-    return pipe.run(video_path, progress_callback=progress_callback, output_dir=output_dir)
+    return pipe.run(video_path, progress_callback=progress_callback, output_dir=output_dir, regions=regions)
