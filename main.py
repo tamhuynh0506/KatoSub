@@ -14,6 +14,7 @@ from pipeline_v4 import run_v4
 from pipeline_audio import run_audio_pipeline
 from pipeline_replace_subs import run_replace_subs_pipeline
 from pipeline_watermark import run_watermark_pipeline
+from watermark_editor import WatermarkEditor
 
 # ─── Color Palette & Theme ───────────────────────────────────────────────────
 
@@ -141,6 +142,16 @@ class App(ctk.CTk):
         )
         # Hidden by default (OCR mode is default)
 
+        # ── Watermark Editor Checkbox (shown only for Watermark mode) ──
+        self.use_wm_editor_var = ctk.BooleanVar(value=True)
+        self.wm_editor_checkbox = ctk.CTkCheckBox(
+            sidebar, text="Interactive Selection", variable=self.use_wm_editor_var,
+            font=(FONT_FAMILY, 12, "bold"), text_color=COLORS["text_primary"],
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            border_color=COLORS["border"],
+        )
+        # Hidden by default
+
         # ── Translator Model ──
         ctk.CTkLabel(
             sidebar, text="TRANSLATOR MODEL", font=(FONT_FAMILY, 10, "bold"),
@@ -177,14 +188,17 @@ class App(ctk.CTk):
         sep2.grid(row=10, column=0, sticky="ew", padx=15, pady=10)
 
     def _on_pipeline_mode_change(self, value):
-        """Show/hide Whisper model selector based on pipeline mode."""
+        """Show/hide specific mode options."""
+        # Hide all context options first
+        self.whisper_label.grid_forget()
+        self.whisper_menu.grid_forget()
+        self.wm_editor_checkbox.grid_forget()
+
         if value == "Audio Only (Whisper)":
             self.whisper_label.grid(row=4, column=0, padx=20, pady=(15, 2), sticky="w")
             self.whisper_menu.grid(row=5, column=0, padx=20, pady=(0, 8), sticky="w")
-        else:
-            # Replace Subs (Full) uses medium hardcoded; OCR doesn't use Whisper
-            self.whisper_label.grid_forget()
-            self.whisper_menu.grid_forget()
+        elif value == "Watermark Removal":
+            self.wm_editor_checkbox.grid(row=4, column=0, padx=20, pady=(15, 8), sticky="w")
 
     # ─── Main Area ────────────────────────────────────────────────────────
 
@@ -442,11 +456,41 @@ class App(ctk.CTk):
                     self._update_progress_from_msg(msg, _idx, total_videos)
 
                 if is_watermark_mode:
-                    result = run_watermark_pipeline(
-                        video_path,
-                        progress_callback=progress_cb,
-                        output_dir=output_dir,
-                    )
+                    if self.use_wm_editor_var.get():
+                        # Open the interactive editor on the main thread and wait
+                        regions_holder = [None]  # mutable container
+                        edit_done = threading.Event()
+
+                        def _open_editor(_vp=video_path):
+                            editor = WatermarkEditor(self, _vp)
+                            self.wait_window(editor)
+                            regions_holder[0] = editor.result_regions
+                            edit_done.set()
+
+                        self.after(0, _open_editor)
+                        edit_done.wait()  # block worker thread until editor closes
+
+                        user_regions = regions_holder[0]
+                        if user_regions is None or len(user_regions) == 0:
+                            self._log(f"   ⏭  Skipped (no regions selected)")
+                            continue
+
+                        self._log(f"   🎯  {len(user_regions)} region(s) selected by user")
+                        result = run_watermark_pipeline(
+                            video_path,
+                            progress_callback=progress_cb,
+                            output_dir=output_dir,
+                            regions=user_regions,
+                        )
+                    else:
+                        # Auto-detection mode
+                        self._log(f"   🤖  Running automatic temporal variance detection")
+                        result = run_watermark_pipeline(
+                            video_path,
+                            progress_callback=progress_cb,
+                            output_dir=output_dir,
+                            regions=None,  # triggers auto mode in pipeline
+                        )
                 elif is_replace_mode:
                     result = run_replace_subs_pipeline(
                         video_path,

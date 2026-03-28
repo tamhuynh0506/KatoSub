@@ -7,6 +7,7 @@ pillow==11.3.0
 numpy==1.26.4
 deep-translator==1.11.4
 simple-lama-inpainting==0.1.0
+diffusers==0.37.1
 
 # PyTorch with CUDA 12.1 support
 # Install via: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
