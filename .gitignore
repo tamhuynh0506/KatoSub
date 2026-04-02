@@ -171,4 +171,6 @@ output.txt
 *.webm
 !README.md
 
-test/*
+test/
+propainter_module/
+weights/
