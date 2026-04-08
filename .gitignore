@@ -170,3 +170,7 @@ output.txt
 *.flv
 *.webm
 !README.md
+
+test/
+propainter_module/
+weights/
