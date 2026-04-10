@@ -1,7 +1,7 @@
 import os
 import time
 import subprocess
-import subprocess
+import whisper
 import cv2
 from ai_translator import AITranslator
 
@@ -100,7 +100,6 @@ def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=No
 
     _log(f"Loading Whisper model: {whisper_model_name}...")
     start_time = time.time()
-    import whisper
     model = whisper.load_model(whisper_model_name)
     load_time = time.time() - start_time
     _log(f"Whisper model loaded in {load_time:.1f}s")
