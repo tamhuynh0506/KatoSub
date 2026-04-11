@@ -9,11 +9,12 @@ if sys.platform == "win32":
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+import tkinter as tk
 import threading
 import shutil
 import re
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageOps, ImageTk
 
 # Granular pipeline imports for split-phase execution
 from pipeline_v4 import SelectiveInpaintPipe
@@ -58,6 +59,140 @@ BASE_DIR = Path(__file__).parent
 AVATAR_DIR = BASE_DIR / "data" / "avatar"
 AVATAR_PATH = AVATAR_DIR / "avatar.png"
 AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+
+# ─── Avatar Editor Modal ────────────────────────────────────────────────────
+
+class AvatarEditorModal(ctk.CTkToplevel):
+    def __init__(self, parent, image_path, on_save_callback):
+        super().__init__(parent)
+        self.title("Adjust Avatar")
+        self.geometry("450x550")
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
+        self.grab_set()
+
+        self.on_save_callback = on_save_callback
+        
+        try:
+            self.original_image = Image.open(image_path).convert("RGBA")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load image: {e}")
+            self.destroy()
+            return
+            
+        self.scale = 1.0
+        self.offset_x = 0
+        self.offset_y = 0
+        self.drag_start_x = 0
+        self.drag_start_y = 0
+        self.drag_start_offset_x = 0
+        self.drag_start_offset_y = 0
+
+        self.canvas_w = 400
+        self.canvas_h = 400
+        self.crop_size = 250
+
+        # Canvas
+        self.canvas = tk.Canvas(self, width=self.canvas_w, height=self.canvas_h, bg=COLORS["bg_dark"], highlightthickness=0)
+        self.canvas.pack(pady=(20, 10))
+
+        # Bindings
+        self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+
+        # Scale slider
+        slider_frame = ctk.CTkFrame(self, fg_color="transparent")
+        slider_frame.pack(fill="x", padx=40, pady=10)
+        
+        ctk.CTkLabel(slider_frame, text="Zoom:", font=(FONT_FAMILY, 12)).pack(side="left", padx=(0, 10))
+        self.slider = ctk.CTkSlider(slider_frame, from_=0.1, to=5.0, command=self._on_scale)
+        self.slider.pack(side="left", fill="x", expand=True)
+
+        # Buttons
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=10)
+        ctk.CTkButton(btn_frame, text="Cancel", width=100, fg_color=COLORS["panel_header"], hover_color=COLORS["border"], command=self.destroy).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="Save Crop", width=100, fg_color=COLORS["success"], hover_color=COLORS["success_hover"], command=self._save).pack(side="left", padx=10)
+
+        self._fit_initial()
+        self._update_canvas()
+
+    def _fit_initial(self):
+        w, h = self.original_image.size
+        # Fit the smallest side to the crop box
+        self.scale = max(self.crop_size / w, self.crop_size / h)
+        if self.scale < 0.1: self.scale = 0.1
+        if self.scale > 5.0: self.scale = 5.0
+        self.slider.set(self.scale)
+
+    def _on_scale(self, val):
+        self.scale = float(val)
+        self._update_canvas()
+
+    def _on_drag_start(self, event):
+        self.drag_start_x = event.x
+        self.drag_start_y = event.y
+        self.drag_start_offset_x = self.offset_x
+        self.drag_start_offset_y = self.offset_y
+
+    def _on_drag(self, event):
+        self.offset_x = self.drag_start_offset_x + (event.x - self.drag_start_x)
+        self.offset_y = self.drag_start_offset_y + (event.y - self.drag_start_y)
+        self._update_canvas()
+
+    def _update_canvas(self):
+        self.canvas.delete("all")
+        
+        new_w = int(self.original_image.width * self.scale)
+        new_h = int(self.original_image.height * self.scale)
+        if new_w <= 0 or new_h <= 0: return
+        
+        resized = self.original_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        self.tk_image = ImageTk.PhotoImage(resized)
+        
+        img_x = self.canvas_w / 2 + self.offset_x
+        img_y = self.canvas_h / 2 + self.offset_y
+        self.canvas.create_image(img_x, img_y, image=self.tk_image, anchor="center")
+        
+        c_left = (self.canvas_w - self.crop_size) / 2
+        c_top = (self.canvas_h - self.crop_size) / 2
+        c_right = c_left + self.crop_size
+        c_bottom = c_top + self.crop_size
+        
+        # Opaque overlay outside crop
+        fill = "#000000"
+        stipple = "gray50" if sys.platform == "win32" else ""
+        
+        self.canvas.create_rectangle(0, 0, self.canvas_w, c_top, fill=fill, outline="", stipple=stipple)
+        self.canvas.create_rectangle(0, c_bottom, self.canvas_w, self.canvas_h, fill=fill, outline="", stipple=stipple)
+        self.canvas.create_rectangle(0, c_top, c_left, c_bottom, fill=fill, outline="", stipple=stipple)
+        self.canvas.create_rectangle(c_right, c_top, self.canvas_w, c_bottom, fill=fill, outline="", stipple=stipple)
+
+        self.canvas.create_rectangle(c_left, c_top, c_right, c_bottom, outline=COLORS["accent"], width=2)
+        
+    def _save(self):
+        orig_w, orig_h = self.original_image.size
+        cx, cy = orig_w / 2, orig_h / 2
+        
+        crop_cx = cx - (self.offset_x / self.scale)
+        crop_cy = cy - (self.offset_y / self.scale)
+        
+        crop_size_orig = self.crop_size / self.scale
+        
+        left = int(crop_cx - crop_size_orig / 2)
+        top = int(crop_cy - crop_size_orig / 2)
+        right = int(crop_cx + crop_size_orig / 2)
+        bottom = int(crop_cy + crop_size_orig / 2)
+        
+        cropped = self.original_image.crop((left, top, right, bottom))
+        cropped = cropped.resize((250, 250), Image.Resampling.LANCZOS)
+        
+        cropped.save(AVATAR_PATH, "PNG")
+        
+        self.on_save_callback()
+        self.destroy()
+
+
 
 TARGET_LANGUAGES = {
     "Vietnamese": "vi",
@@ -178,19 +313,18 @@ class App(ctk.CTk):
             return None
 
     def _change_avatar(self):
-        """Opens a file dialog to change the profile image and saves it."""
+        """Opens a file dialog to change the profile image and opens the editor modal."""
         file_path = filedialog.askopenfilename(
             filetypes=[("Image Files", "*.png *.jpg *.jpeg *.bmp *.gif")]
         )
         if file_path:
-            try:
-                shutil.copy2(file_path, AVATAR_PATH)
-                new_image = self._get_avatar_image(AVATAR_PATH)
-                if new_image:
-                    self.avatar_image = new_image
-                    self.avatar_label.configure(image=self.avatar_image)
-            except Exception as e:
-                messagebox.showerror("Error", f"Could not save avatar: {e}")
+            AvatarEditorModal(self, file_path, self._on_avatar_saved)
+
+    def _on_avatar_saved(self):
+        new_image = self._get_avatar_image(AVATAR_PATH)
+        if new_image:
+            self.avatar_image = new_image
+            self.avatar_label.configure(image=self.avatar_image)
 
     # ─── Header Bar ──────────────────────────────────────────────────────
 
