@@ -212,31 +212,48 @@ class App(ctk.CTk):
             font=(FONT_FAMILY, 11), text_color=COLORS["text_muted"], anchor="w"
         ).grid(row=0, column=1, padx=(10, 0), pady=10, sticky="w")
 
-        # Add Videos button in header
-        ctk.CTkButton(
-            header, text="+ Add Videos", width=120, height=32,
-            fg_color=COLORS["success"], hover_color=COLORS["success_hover"],
-            font=(FONT_FAMILY, 12, "bold"), command=self._add_videos,
-        ).grid(row=0, column=2, padx=15, pady=10, sticky="e")
 
+        # Output Path in header
+        path_frame = ctk.CTkFrame(header, fg_color="transparent")
+        path_frame.grid(row=0, column=2, padx=(20, 15), pady=10, sticky="e")
+        
+        ctk.CTkLabel(
+            path_frame, text="Output Path:", font=(FONT_FAMILY, 11, "bold"),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left", padx=(0, 8))
+
+        self.output_entry = ctk.CTkEntry(
+            path_frame, placeholder_text="Same as input video...", width=250, height=28,
+            fg_color=COLORS["bg_dark"], border_color=COLORS["border"],
+            text_color=COLORS["text_primary"], font=(FONT_FAMILY, 11),
+        )
+        self.output_entry.pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            path_frame, text="Browse...", width=65, height=28,
+            fg_color=COLORS["card_hover"], hover_color=COLORS["border"],
+            font=(FONT_FAMILY, 11), command=self._browse_output,
+        ).pack(side="left")
     # ─── Content Area (main grid) ─────────────────────────────────────────
 
     def _build_content_area(self):
         content = ctk.CTkFrame(self, fg_color="transparent")
         content.grid(row=1, column=0, sticky="nsew", padx=8, pady=(8, 4))
 
-        # 3 columns: avatar | queue | editor+settings
-        content.grid_columnconfigure(0, weight=0, minsize=290)  # Avatar
-        content.grid_columnconfigure(1, weight=1, minsize=300)  # Queue
-        content.grid_columnconfigure(2, weight=2, minsize=400)  # Editor + Settings
+        # 3 columns: avatar / settings | queue / pipeline log | editor / trans log
+        content.grid_columnconfigure(0, weight=0, minsize=320)  # Avatar & Settings col
+        content.grid_columnconfigure(1, weight=1, minsize=280)  # Queue & Pipeline col
+        content.grid_columnconfigure(2, weight=3, minsize=500)  # Editor & Translation log col
 
-        # 2 rows: top panels | log panels
-        content.grid_rowconfigure(0, weight=3)  # Top panels (taller)
-        content.grid_rowconfigure(1, weight=2)  # Log panels
+        # 2 rows: top panels | log/settings panels
+        content.grid_rowconfigure(0, weight=4)  # Top panels (taller)
+        content.grid_rowconfigure(1, weight=3)  # Bottom panels
 
         self._build_avatar_panel(content)
         self._build_queue_panel(content)
-        self._build_right_panels(content)
+        self._build_translation_editor(content)
+        
+        self._build_settings_panel(content)
         self._build_log_panels(content)
 
     # ─── Avatar Panel (far left) ──────────────────────────────────────────
@@ -281,13 +298,19 @@ class App(ctk.CTk):
         btn_frame.grid(row=0, column=1, padx=(0, 8), pady=6, sticky="e")
 
         ctk.CTkButton(
-            btn_frame, text="Remove", width=65, height=26,
+            btn_frame, text="+ Add Videos", width=90, height=26,
+            fg_color=COLORS["success"], hover_color=COLORS["success_hover"],
+            font=(FONT_FAMILY, 10, "bold"), command=self._add_videos,
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            btn_frame, text="Remove", width=60, height=26,
             fg_color=COLORS["danger"], hover_color=COLORS["danger_hover"],
             font=(FONT_FAMILY, 10), command=self._remove_selected,
         ).pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
-            btn_frame, text="Clear", width=55, height=26,
+            btn_frame, text="Clear", width=50, height=26,
             fg_color=COLORS["card_hover"], hover_color=COLORS["border"],
             font=(FONT_FAMILY, 10), command=self._clear_queue,
         ).pack(side="left")
@@ -322,23 +345,11 @@ class App(ctk.CTk):
 
         self._refresh_file_list()
 
-    # ─── Right Panels (Translation Editor + Settings) ─────────────────────
-
-    def _build_right_panels(self, parent):
-        right = ctk.CTkFrame(parent, fg_color="transparent")
-        right.grid(row=0, column=2, sticky="nsew", pady=(0, 6))
-        right.grid_columnconfigure(0, weight=1)
-        right.grid_rowconfigure(0, weight=3)  # Editor (larger)
-        right.grid_rowconfigure(1, weight=0)  # Settings (compact)
-
-        self._build_translation_editor(right)
-        self._build_settings_panel(right)
-
-    # ─── Interactive Translation Editor ───────────────────────────────────
+    # ─── Interactive Translation Editor (MAIN PANEL) ───────────────────────
 
     def _build_translation_editor(self, parent):
         panel = ctk.CTkFrame(parent, fg_color=COLORS["panel"], corner_radius=12)
-        panel.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
+        panel.grid(row=0, column=2, sticky="nsew", pady=(0, 6))
         panel.grid_columnconfigure(0, weight=1)
         panel.grid_rowconfigure(1, weight=1)
 
@@ -736,15 +747,14 @@ class App(ctk.CTk):
     # ─── Settings Panel ───────────────────────────────────────────────────
 
     def _build_settings_panel(self, parent):
+        # Positioned in row 1, col 0 (matches Avatar width)
         panel = ctk.CTkFrame(parent, fg_color=COLORS["panel"], corner_radius=12)
-        panel.grid(row=1, column=0, sticky="nsew")
+        panel.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(0, 0))
         panel.grid_columnconfigure(0, weight=1)
-        panel.grid_columnconfigure(1, weight=1)
-        panel.grid_columnconfigure(2, weight=1)
 
         # Header
         header = ctk.CTkFrame(panel, fg_color=COLORS["panel_header"], corner_radius=8)
-        header.grid(row=0, column=0, columnspan=3, sticky="ew", padx=8, pady=(8, 6))
+        header.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 6))
         header.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -752,23 +762,20 @@ class App(ctk.CTk):
             font=(FONT_FAMILY, 13, "bold"), text_color=COLORS["text_primary"],
         ).grid(row=0, column=0, padx=12, pady=8, sticky="w")
 
-        # Export SRT button in settings header
-        ctk.CTkButton(
-            header, text="Export SRT", width=80, height=26,
-            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
-            font=(FONT_FAMILY, 10, "bold"), command=self._export_edited_srt,
-        ).grid(row=0, column=1, padx=(0, 8), pady=6, sticky="e")
+        # Container for horizontal grid items
+        settings_container = ctk.CTkScrollableFrame(
+            panel, fg_color="transparent", corner_radius=0,
+            scrollbar_button_color=COLORS["border"],
+            scrollbar_button_hover_color=COLORS["accent"],
+        )
+        settings_container.grid(row=1, column=0, sticky="nsew", padx=4, pady=0)
+        panel.grid_rowconfigure(1, weight=1)
+        settings_container.grid_columnconfigure(0, weight=1)
+        settings_container.grid_columnconfigure(1, weight=1)
 
-        # Row 1: Type | Resolution Preset | Output Quality
-        settings_row = ctk.CTkFrame(panel, fg_color="transparent")
-        settings_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 4))
-        settings_row.grid_columnconfigure(0, weight=1)
-        settings_row.grid_columnconfigure(1, weight=1)
-        settings_row.grid_columnconfigure(2, weight=1)
-
-        # Type (Pipeline Mode)
-        type_frame = ctk.CTkFrame(settings_row, fg_color="transparent")
-        type_frame.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        # Row 0: Pipeline Type
+        type_frame = ctk.CTkFrame(settings_container, fg_color="transparent")
+        type_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8), padx=4)
         type_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -787,9 +794,9 @@ class App(ctk.CTk):
             command=self._on_pipeline_mode_change,
         ).grid(row=1, column=0, sticky="ew", padx=4)
 
-        # Resolution Preset
-        res_frame = ctk.CTkFrame(settings_row, fg_color="transparent")
-        res_frame.grid(row=0, column=1, sticky="ew", padx=4)
+        # Row 1: Left = Resolution Preset
+        res_frame = ctk.CTkFrame(settings_container, fg_color="transparent")
+        res_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8), padx=4)
         res_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -807,9 +814,9 @@ class App(ctk.CTk):
             font=(FONT_FAMILY, 11),
         ).grid(row=1, column=0, sticky="ew", padx=4)
 
-        # Output Quality
-        quality_frame = ctk.CTkFrame(settings_row, fg_color="transparent")
-        quality_frame.grid(row=0, column=2, sticky="ew", padx=(4, 0))
+        # Row 1: Right = Output Quality
+        quality_frame = ctk.CTkFrame(settings_container, fg_color="transparent")
+        quality_frame.grid(row=1, column=1, sticky="ew", pady=(0, 8), padx=4)
         quality_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -827,16 +834,9 @@ class App(ctk.CTk):
             font=(FONT_FAMILY, 11),
         ).grid(row=1, column=0, sticky="ew", padx=4)
 
-        # Row 2: Translator | Target Language (conditional)
-        trans_row = ctk.CTkFrame(panel, fg_color="transparent")
-        trans_row.grid(row=2, column=0, columnspan=3, sticky="ew", padx=8, pady=(4, 4))
-        trans_row.grid_columnconfigure(0, weight=1)
-        trans_row.grid_columnconfigure(1, weight=1)
-        trans_row.grid_columnconfigure(2, weight=1)
-
-        # Translator
-        translator_frame = ctk.CTkFrame(trans_row, fg_color="transparent")
-        translator_frame.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        # Row 2: Left = Translator
+        translator_frame = ctk.CTkFrame(settings_container, fg_color="transparent")
+        translator_frame.grid(row=2, column=0, sticky="ew", pady=(0, 8), padx=4)
         translator_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -854,9 +854,9 @@ class App(ctk.CTk):
             font=(FONT_FAMILY, 11),
         ).grid(row=1, column=0, sticky="ew", padx=4)
 
-        # Target Language
-        lang_frame = ctk.CTkFrame(trans_row, fg_color="transparent")
-        lang_frame.grid(row=0, column=1, sticky="ew", padx=4)
+        # Row 2: Right = Target Language
+        lang_frame = ctk.CTkFrame(settings_container, fg_color="transparent")
+        lang_frame.grid(row=2, column=1, sticky="ew", pady=(0, 8), padx=4)
         lang_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -874,15 +874,16 @@ class App(ctk.CTk):
             font=(FONT_FAMILY, 11),
         ).grid(row=1, column=0, sticky="ew", padx=4)
 
-        # Whisper model (shown conditionally)
-        self.whisper_frame = ctk.CTkFrame(trans_row, fg_color="transparent")
-        self.whisper_frame.grid(row=0, column=2, sticky="ew", padx=(4, 0))
+        # Row 3: Left = Whisper model (shown conditionally)
+        self.whisper_frame = ctk.CTkFrame(settings_container, fg_color="transparent")
+        self.whisper_frame.grid(row=3, column=0, sticky="ew", pady=(0, 8), padx=4)
         self.whisper_frame.grid_columnconfigure(0, weight=1)
 
         self.whisper_label = ctk.CTkLabel(
             self.whisper_frame, text="Whisper Model", font=(FONT_FAMILY, 10, "bold"),
             text_color=COLORS["text_muted"],
         )
+        self.whisper_label.grid(row=0, column=0, padx=4, pady=(0, 2), sticky="w")
 
         self.whisper_model_var = ctk.StringVar(value="base")
         self.whisper_menu = ctk.CTkOptionMenu(
@@ -893,51 +894,22 @@ class App(ctk.CTk):
             dropdown_fg_color=COLORS["panel"],
             font=(FONT_FAMILY, 11),
         )
-
-        # Row 3: Output Path
-        path_row = ctk.CTkFrame(panel, fg_color="transparent")
-        path_row.grid(row=3, column=0, columnspan=3, sticky="ew", padx=8, pady=(2, 8))
-        path_row.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            path_row, text="Output Path", font=(FONT_FAMILY, 10, "bold"),
-            text_color=COLORS["text_muted"],
-        ).grid(row=0, column=0, padx=(4, 8), sticky="w")
-
-        self.output_entry = ctk.CTkEntry(
-            path_row, placeholder_text="Same as input video...",
-            fg_color=COLORS["bg_dark"], border_color=COLORS["border"],
-            text_color=COLORS["text_primary"], font=(FONT_FAMILY, 11),
-        )
-        self.output_entry.grid(row=0, column=1, sticky="ew", padx=(0, 6))
-
-        ctk.CTkButton(
-            path_row, text="Browse...", width=75, height=28,
-            fg_color=COLORS["card_hover"], hover_color=COLORS["border"],
-            font=(FONT_FAMILY, 11), command=self._browse_output,
-        ).grid(row=0, column=2)
+        self.whisper_menu.grid(row=1, column=0, sticky="ew", padx=4)
+        self.whisper_frame.grid_remove() # hide by default
 
     def _on_pipeline_mode_change(self, value):
         """Show/hide Whisper model selector based on pipeline mode."""
-        self.whisper_label.grid_forget()
-        self.whisper_menu.grid_forget()
+        self.whisper_frame.grid_remove()
 
         if value == "Audio Only (Whisper)":
-            self.whisper_label.grid(row=0, column=0, padx=4, pady=(0, 2), sticky="w")
-            self.whisper_menu.grid(row=1, column=0, sticky="ew", padx=4)
+            self.whisper_frame.grid()
 
     # ─── Log Panels (dual split) ─────────────────────────────────────────
 
     def _build_log_panels(self, parent):
-        log_container = ctk.CTkFrame(parent, fg_color="transparent")
-        log_container.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(0, 0))
-        log_container.grid_columnconfigure(0, weight=1)
-        log_container.grid_columnconfigure(1, weight=1)
-        log_container.grid_rowconfigure(0, weight=1)
-
-        # Left: Pipeline Processing Log
-        left_log = ctk.CTkFrame(log_container, fg_color=COLORS["panel"], corner_radius=12)
-        left_log.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        # Left: Pipeline Processing Log (Maps to Queue in Col 1)
+        left_log = ctk.CTkFrame(parent, fg_color=COLORS["panel"], corner_radius=12)
+        left_log.grid(row=1, column=1, sticky="nsew", padx=(0, 4), pady=(0, 0))
         left_log.grid_columnconfigure(0, weight=1)
         left_log.grid_rowconfigure(1, weight=1)
 
@@ -954,9 +926,9 @@ class App(ctk.CTk):
         self.log_console.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
         self.log_console.configure(state="disabled")
 
-        # Right: Translation Log
-        right_log = ctk.CTkFrame(log_container, fg_color=COLORS["panel"], corner_radius=12)
-        right_log.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        # Right: Translation Log (Maps to Editor in Col 2)
+        right_log = ctk.CTkFrame(parent, fg_color=COLORS["panel"], corner_radius=12)
+        right_log.grid(row=1, column=2, sticky="nsew", padx=(4, 0), pady=(0, 0))
         right_log.grid_columnconfigure(0, weight=1)
         right_log.grid_rowconfigure(1, weight=1)
 
