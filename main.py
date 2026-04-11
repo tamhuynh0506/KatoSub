@@ -1451,13 +1451,13 @@ class App(ctk.CTk):
         # Phase 1: OCR Detection
         self._log("   Phase 1: OCR Detection + Translation")
         pipe = SelectiveInpaintPipe()
-        ocr_history, fps = pipe.extract_metadata(video_path, progress_cb)
+        ocr_history, fps = pipe.extract_metadata(video_path, progress_cb, cancel_event=self.cancel_event)
 
         segments = get_stabilized_segments(ocr_history, fps)
         self._log(f"   OCR detected text on {len(ocr_history)} frames → {len(segments)} segments")
 
-        if not segments:
-            self._log("   ⚠ No subtitles detected — skipping")
+        if not segments or self.cancel_event.is_set():
+            if not segments: self._log("   ⚠ No subtitles detected — skipping")
             return None
 
         # Phase 1b: Translation
@@ -1469,6 +1469,9 @@ class App(ctk.CTk):
         if not translated_srt or not translated_srt.strip():
             self._log("   ⚠ Translation returned empty")
             translated_srt = original_srt
+            
+        if self.cancel_event.is_set():
+            return None
 
         # ── PAUSE: User review in Translation Editor ──
         edited_srt = self._wait_for_user_review(original_srt, translated_srt)
@@ -1479,7 +1482,8 @@ class App(ctk.CTk):
         self._log("   Phase 2: AI Inpainting + Subtitle Rendering")
         result = pipe.inpaint_and_render(
             video_path, segments, edited_srt,
-            progress_callback=progress_cb, output_dir=output_dir
+            progress_callback=progress_cb, output_dir=output_dir,
+            cancel_event=self.cancel_event
         )
         return result
 

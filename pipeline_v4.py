@@ -36,7 +36,7 @@ class SelectiveInpaintPipe:
         self.frame_skip = 2
         self.ocr_width = 1280 # Better resolution (like v2)
 
-    def extract_metadata(self, video_path, progress_callback=None):
+    def extract_metadata(self, video_path, progress_callback=None, cancel_event=None):
         """Pass 1: Detect subtitle boxes across the video."""
         def _log(msg):
             if progress_callback: progress_callback(msg)
@@ -54,6 +54,8 @@ class SelectiveInpaintPipe:
         debug_first = True  # Log the first OCR result for debugging
         
         while cap.isOpened():
+            if cancel_event and cancel_event.is_set():
+                break
             ret, frame = cap.read()
             if not ret: break
             
@@ -143,7 +145,7 @@ class SelectiveInpaintPipe:
         cap.release()
         return ocr_history, fps
 
-    def inpaint_and_render(self, video_path, ocr_history, translated_srt, progress_callback=None, output_dir=None):
+    def inpaint_and_render(self, video_path, ocr_history, translated_srt, progress_callback=None, output_dir=None, cancel_event=None):
         """Pass 2 & 3 Combined: Selective Inpainting + Final Encoding using 3-Tier Threading."""
         import queue
         import threading
@@ -215,6 +217,9 @@ class SelectiveInpaintPipe:
         def producer():
             idx = 0
             while cap.isOpened() and not stop_event.is_set():
+                if cancel_event and cancel_event.is_set():
+                    stop_event.set()
+                    break
                 ret, frame = cap.read()
                 if not ret: break
                 boxes = frame_to_boxes.get(idx)
