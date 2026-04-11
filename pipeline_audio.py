@@ -84,7 +84,7 @@ def extract_audio(video_path, progress_callback=None):
     return None
 
 
-def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=None):
+def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=None, hf_token=None):
     """Transcribe audio using Whisper and return SRT-formatted content.
     
     Uses word-level timestamps for precise timing and applies a small delay
@@ -126,6 +126,16 @@ def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=No
         _log("No speech detected in audio!")
         return "", detected_lang
 
+    # Run Diarization if requested
+    if hf_token and hf_token.strip():
+        try:
+            from pipeline_diarization import run_diarization, merge_whisper_speakers
+            diarization = run_diarization(audio_path, hf_token.strip(), progress_callback)
+            if diarization:
+                segments = merge_whisper_speakers(segments, diarization)
+        except Exception as e:
+            _log(f"   ⚠ Diarization module failed: {e}")
+
     # Build SRT content from Whisper segments with timing correction
     srt_lines = []
     srt_idx = 0
@@ -157,9 +167,16 @@ def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=No
         srt_idx += 1
         start = format_timestamp_srt(seg_start)
         end = format_timestamp_srt(seg_end)
+        
+        speaker = seg.get("speaker")
+        if speaker and speaker != "Unknown":
+            text_out = f"[{speaker}] {text}"
+        else:
+            text_out = text
+
         srt_lines.append(f"{srt_idx}")
         srt_lines.append(f"{start} --> {end}")
-        srt_lines.append(f"{text}\n")
+        srt_lines.append(f"{text_out}\n")
 
     srt_content = "\n".join(srt_lines)
     _log(f"Generated SRT with {srt_idx} blocks (delay offset: +{SUBTITLE_DELAY_OFFSET}s)")
@@ -189,14 +206,17 @@ def render_subtitles(video_path, srt_content, progress_callback=None, output_dir
     base_name = os.path.basename(video_path)
     name_without_ext = os.path.splitext(base_name)[0]
 
+    is_ass = srt_content.strip().startswith("[Script Info]")
+    ext = "ass" if is_ass else "srt"
+
     if output_dir:
         output_path = os.path.join(output_dir, name_without_ext + "_audio_translated.mp4")
-        temp_srt_path = os.path.join(output_dir, name_without_ext + "_audio_translated.srt")
+        temp_srt_path = os.path.join(output_dir, name_without_ext + f"_audio_translated.{ext}")
     else:
         output_path = video_path.rsplit(".", 1)[0] + "_audio_translated.mp4"
-        temp_srt_path = video_path.rsplit(".", 1)[0] + "_audio_translated.srt"
+        temp_srt_path = video_path.rsplit(".", 1)[0] + f"_audio_translated.{ext}"
 
-    # Write SRT with UTF-8 BOM for FFmpeg compatibility
+    # Write SRT/ASS with UTF-8 BOM for FFmpeg compatibility
     with open(temp_srt_path, "w", encoding="utf-8-sig") as f:
         f.write(srt_content)
 
@@ -210,12 +230,16 @@ def render_subtitles(video_path, srt_content, progress_callback=None, output_dir
     # Escape path for FFmpeg subtitles filter (Windows needs special handling)
     srt_abs = os.path.abspath(temp_srt_path).replace("\\", "/").replace(":", "\\:")
 
-    style = "FontSize=22,PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV=15"
+    if is_ass:
+        vf_filter = f"ass='{srt_abs}'"
+    else:
+        style = "FontSize=22,PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV=15"
+        vf_filter = f"subtitles='{srt_abs}':force_style='{style}'"
 
     cmd = [
         "ffmpeg", "-y",
         "-i", video_path,
-        "-vf", f"subtitles='{srt_abs}':force_style='{style}'",
+        "-vf", vf_filter,
         "-c:v", "h264_nvenc", "-preset", "p5", "-cq", "32",
         "-b:v", "5M", "-maxrate", "8M", "-bufsize", "16M",
         "-c:a", "copy",     # Passthrough audio

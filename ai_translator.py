@@ -283,7 +283,13 @@ Guidelines:
                 print(f"DEBUG: Raw response: {content[:200]}...")
                 time.sleep(1)
             except Exception as e:
-                print(f"DEBUG: Ollama translation error on attempt {attempt+1}: {e}")
+                err_msg = str(e)
+                print(f"DEBUG: Ollama translation error on attempt {attempt+1}: {err_msg}")
+                # Check for OOM / Memory limit errors specifically
+                if "more system memory" in err_msg.lower() or "not enough memory" in err_msg.lower():
+                    print("🚨 ERROR: Model too large for your RAM/VRAM. Switching to individual Google fallback.")
+                    print("💡 TIP: Try choosing the smaller 'Ollama (gemma3:4b)' model in Project Settings.")
+                    break # Stop retrying, memory won't magically appear
                 time.sleep(2)
         return None
 

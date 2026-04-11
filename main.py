@@ -251,6 +251,7 @@ class App(ctk.CTk):
         self.undo_stack = []
         self.redo_stack = []
         self.glossary = {}           # {source_term: target_term}
+        self.speaker_styles = {}     # {speaker_name: {"color": "#Hex", "marginV": "Px"}}
         self.current_srt_source = ""
         self.current_srt_translated = ""
         self.translation_entry_widgets = []  # References to editable Entry widgets
@@ -520,6 +521,13 @@ class App(ctk.CTk):
             font=(FONT_FAMILY, 11, "bold"), command=self._open_glossary,
         ).pack(side="left", padx=(8, 0))
 
+        ctk.CTkButton(
+            toolbar, text="🎨 Speaker Styles", width=110, height=26,
+            fg_color=COLORS["panel"], border_color=COLORS["border"], border_width=1, hover_color=COLORS["panel_header"],
+            text_color=COLORS["text_primary"],
+            font=(FONT_FAMILY, 11, "bold"), command=self._open_speaker_styles,
+        ).pack(side="left", padx=(8, 0))
+
         # Continue Inpainting button — shown after OCR+Translation completes
         self.continue_btn = ctk.CTkButton(
             toolbar, text="▶ Continue Inpainting", width=160, height=28,
@@ -532,31 +540,38 @@ class App(ctk.CTk):
         # Column headers for source / translated
         col_header = ctk.CTkFrame(panel, fg_color=COLORS["panel_header"], corner_radius=6, height=30)
         col_header.grid(row=1, column=0, sticky="new", padx=8, pady=(2, 0))
-        col_header.grid_columnconfigure(0, weight=0, minsize=55)
-        col_header.grid_columnconfigure(1, weight=1)
-        col_header.grid_columnconfigure(2, weight=0, minsize=55)
-        col_header.grid_columnconfigure(3, weight=1)
+        col_header.grid_columnconfigure(0, weight=0, minsize=70)
+        col_header.grid_columnconfigure(1, weight=0, minsize=80)
+        col_header.grid_columnconfigure(2, weight=1)
+        col_header.grid_columnconfigure(3, weight=0, minsize=70)
+        col_header.grid_columnconfigure(4, weight=1)
+        col_header.grid_columnconfigure(5, weight=0, minsize=16) # Scrollbar offset
         col_header.grid_propagate(False)
 
         ctk.CTkLabel(
             col_header, text="Time", font=(FONT_FAMILY, 10, "bold"),
             text_color=COLORS["text_muted"],
-        ).grid(row=0, column=0, padx=(12, 4), pady=4, sticky="w")
+        ).grid(row=0, column=0, padx=(28, 4), pady=4, sticky="w")
+
+        ctk.CTkLabel(
+            col_header, text="Speaker", font=(FONT_FAMILY, 10, "bold"),
+            text_color=COLORS["text_muted"],
+        ).grid(row=0, column=1, padx=(42, 4), pady=4, sticky="w")
 
         ctk.CTkLabel(
             col_header, text="Source Text", font=(FONT_FAMILY, 10, "bold"),
             text_color=COLORS["text_muted"],
-        ).grid(row=0, column=1, padx=4, pady=4, sticky="w")
+        ).grid(row=0, column=2, padx=(38, 4), pady=4, sticky="w")
 
         ctk.CTkLabel(
             col_header, text="Time", font=(FONT_FAMILY, 10, "bold"),
             text_color=COLORS["text_muted"],
-        ).grid(row=0, column=2, padx=4, pady=4, sticky="w")
+        ).grid(row=0, column=3, padx=(36, 4), pady=4, sticky="w")
 
         ctk.CTkLabel(
             col_header, text="Translated Text", font=(FONT_FAMILY, 10, "bold"),
             text_color=COLORS["text_muted"],
-        ).grid(row=0, column=3, padx=4, pady=4, sticky="w")
+        ).grid(row=0, column=4, padx=(36, 12), pady=4, sticky="w")
 
         # Scrollable editor rows
         self.editor_scroll = ctk.CTkScrollableFrame(
@@ -565,10 +580,11 @@ class App(ctk.CTk):
             scrollbar_button_hover_color=COLORS["accent"],
         )
         self.editor_scroll.grid(row=1, column=0, sticky="nsew", padx=8, pady=(32, 8))
-        self.editor_scroll.grid_columnconfigure(0, weight=0, minsize=55)
-        self.editor_scroll.grid_columnconfigure(1, weight=1)
-        self.editor_scroll.grid_columnconfigure(2, weight=0, minsize=55)
-        self.editor_scroll.grid_columnconfigure(3, weight=1)
+        self.editor_scroll.grid_columnconfigure(0, weight=0, minsize=70)
+        self.editor_scroll.grid_columnconfigure(1, weight=0, minsize=80)
+        self.editor_scroll.grid_columnconfigure(2, weight=1)
+        self.editor_scroll.grid_columnconfigure(3, weight=0, minsize=70)
+        self.editor_scroll.grid_columnconfigure(4, weight=1)
         panel.grid_rowconfigure(1, weight=1)
 
         # Show placeholder
@@ -599,23 +615,38 @@ class App(ctk.CTk):
         # Pair them up (by index)
         max_len = max(len(source_blocks), len(trans_blocks))
         for i in range(max_len):
-            src = source_blocks[i] if i < len(source_blocks) else {"time_start": "", "time_end": "", "text": ""}
-            trn = trans_blocks[i] if i < len(trans_blocks) else {"time_start": "", "time_end": "", "text": ""}
+            src = source_blocks[i] if i < len(source_blocks) else {"time_start": "", "time_end": "", "text": "", "speaker": "Unknown"}
+            trn = trans_blocks[i] if i < len(trans_blocks) else {"time_start": "", "time_end": "", "text": "", "speaker": "Unknown"}
+            
+            # Prefer source speaker if available, otherwise translated
+            speaker = src.get("speaker", "Unknown")
+            if speaker == "Unknown":
+                speaker = trn.get("speaker", "Unknown")
+                
             self.translation_data.append({
                 "timestamp_start": src.get("time_start", ""),
                 "timestamp_end": src.get("time_end", ""),
                 "source": src.get("text", ""),
                 "translated": trn.get("text", ""),
+                "speaker": speaker
             })
 
         self._render_translation_rows()
         self._translation_log("Translation editor loaded with {} entries.".format(len(self.translation_data)))
 
     def _parse_srt(self, srt_content):
-        """Parse SRT content into a list of dicts with time_start, time_end, text."""
+        """Parse SRT content into a list of dicts with time_start, time_end, text, and speaker."""
         blocks = []
         if not srt_content or not srt_content.strip():
             return blocks
+
+        def _extract_speaker(text):
+            speaker = "Unknown"
+            match = re.match(r'^\[(.*?)\]\s*(.*)$', text, re.DOTALL)
+            if match:
+                speaker = match.group(1).strip()
+                text = match.group(2).strip()
+            return text, speaker
 
         raw_blocks = re.split(r'\n\n+', srt_content.strip())
         for block in raw_blocks:
@@ -623,12 +654,15 @@ class App(ctk.CTk):
             if len(lines) >= 3:
                 time_line = lines[1]
                 text = "\n".join(lines[2:]).strip()
+                text, speaker = _extract_speaker(text)
+                
                 parts = time_line.split(" --> ")
-                time_start = parts[0].strip()[:5] if parts else ""  # HH:MM
-                time_end = parts[1].strip()[:5] if len(parts) > 1 else ""
-                blocks.append({"time_start": time_start, "time_end": time_end, "text": text})
+                time_start = parts[0].strip()[:11] if parts else ""  # HH:MM:SS,ms
+                time_end = parts[1].strip()[:11] if len(parts) > 1 else ""
+                blocks.append({"time_start": time_start, "time_end": time_end, "text": text, "speaker": speaker})
             elif len(lines) >= 2:
-                blocks.append({"time_start": "", "time_end": "", "text": lines[-1].strip()})
+                text, speaker = _extract_speaker(lines[-1].strip())
+                blocks.append({"time_start": "", "time_end": "", "text": text, "speaker": speaker})
 
         return blocks
 
@@ -645,8 +679,25 @@ class App(ctk.CTk):
             ctk.CTkLabel(
                 self.editor_scroll, text=entry["timestamp_start"],
                 font=("Consolas", 10), text_color=COLORS["text_muted"],
-                width=55,
-            ).grid(row=i, column=0, padx=(8, 4), pady=2, sticky="w")
+                width=70,
+            ).grid(row=i, column=0, padx=(12, 4), pady=2, sticky="w")
+
+            # Speaker Dropdown
+            speaker_var = ctk.StringVar(value=entry.get("speaker", "Unknown"))
+            
+            # Update data when changed
+            def _on_speaker_change(new_val, idx=i):
+                self.translation_data[idx]["speaker"] = new_val
+
+            speaker_menu = ctk.CTkOptionMenu(
+                self.editor_scroll, variable=speaker_var,
+                values=["Unknown", "SPEAKER_00", "SPEAKER_01", "SPEAKER_02", "SPEAKER_03"],
+                width=80, font=(FONT_FAMILY, 10),
+                fg_color=COLORS["bg_dark"], button_color=COLORS["accent"],
+                button_hover_color=COLORS["accent_hover"],
+                command=_on_speaker_change
+            )
+            speaker_menu.grid(row=i, column=1, padx=(4, 4), pady=2, sticky="ew")
 
             # Source text (read-only)
             src_entry = ctk.CTkEntry(
@@ -654,7 +705,7 @@ class App(ctk.CTk):
                 fg_color=row_bg, text_color=COLORS["text_secondary"],
                 border_width=0, state="disabled",
             )
-            src_entry.grid(row=i, column=1, padx=2, pady=2, sticky="ew")
+            src_entry.grid(row=i, column=2, padx=(4, 4), pady=2, sticky="ew")
             src_entry.configure(state="normal")
             src_entry.insert(0, entry["source"])
             src_entry.configure(state="disabled")
@@ -663,8 +714,8 @@ class App(ctk.CTk):
             ctk.CTkLabel(
                 self.editor_scroll, text=entry["timestamp_start"],
                 font=("Consolas", 10), text_color=COLORS["text_muted"],
-                width=55,
-            ).grid(row=i, column=2, padx=4, pady=2, sticky="w")
+                width=70,
+            ).grid(row=i, column=3, padx=(4, 4), pady=2, sticky="w")
 
             # Translated text (editable)
             trans_entry = ctk.CTkEntry(
@@ -672,7 +723,7 @@ class App(ctk.CTk):
                 fg_color=row_bg, text_color=COLORS["text_primary"],
                 border_width=1, border_color=COLORS["border"],
             )
-            trans_entry.grid(row=i, column=3, padx=(2, 8), pady=2, sticky="ew")
+            trans_entry.grid(row=i, column=4, padx=(4, 12), pady=2, sticky="ew")
             trans_entry.insert(0, entry["translated"])
 
             # Bind edit tracking
@@ -721,6 +772,72 @@ class App(ctk.CTk):
             w.delete(0, "end")
             w.insert(0, action["new"])
         self._translation_log(f"Redo: line {idx + 1}")
+
+    def _open_speaker_styles(self):
+        """Open a modal to configure UI styles (Color & Position) for detected speakers."""
+        # Detect all unique speakers currently in the editor
+        speakers = set()
+        for entry in self.translation_data:
+            sp = entry.get("speaker", "Unknown")
+            if sp and sp != "Unknown":
+                speakers.add(sp)
+                
+        speakers = sorted(list(speakers))
+        
+        popup = ctk.CTkToplevel(self)
+        popup.title("Speaker Styles (Burn-in Options)")
+        popup.geometry("600x500")
+        popup.configure(fg_color=COLORS["bg_dark"])
+        popup.transient(self)
+        popup.grab_set()
+
+        ctk.CTkLabel(
+            popup, text="🎨 Speaker Styles",
+            font=(FONT_FAMILY, 18, "bold"), text_color=COLORS["accent_light"],
+        ).pack(padx=20, pady=(15, 5))
+
+        ctk.CTkLabel(
+            popup, text="Assign a specific color & vertical position to each person.",
+            font=(FONT_FAMILY, 11), text_color=COLORS["text_muted"],
+        ).pack(padx=20, pady=(0, 10))
+        
+        if not speakers:
+            ctk.CTkLabel(
+                popup, text="No distinct speakers detected yet. Run Pyannote Diarization first.",
+                font=(FONT_FAMILY, 12, "italic"), text_color=COLORS["text_muted"],
+            ).pack(pady=40)
+            return
+            
+        scroll = ctk.CTkScrollableFrame(
+            popup, fg_color=COLORS["panel"], corner_radius=8,
+            scrollbar_button_color=COLORS["border"],
+        )
+        scroll.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        
+        for i, sp in enumerate(speakers):
+            if sp not in self.speaker_styles:
+                # Default style (White text, bottom margin 15)
+                self.speaker_styles[sp] = {"color": "&H00FFFFFF", "marginV": "15"}
+                
+            frame = ctk.CTkFrame(scroll, fg_color=COLORS["bg_dark"], corner_radius=6)
+            frame.grid(row=i, column=0, sticky="ew", padx=8, pady=4)
+            scroll.grid_columnconfigure(0, weight=1)
+            
+            ctk.CTkLabel(frame, text=sp, font=(FONT_FAMILY, 12, "bold"), width=120, anchor="w").grid(row=0, column=0, padx=10, pady=8)
+            
+            ctk.CTkLabel(frame, text="ASS Color Code:", font=(FONT_FAMILY, 11)).grid(row=0, column=1, padx=4)
+            color_var = ctk.StringVar(value=self.speaker_styles[sp]["color"])
+            ctk.CTkEntry(frame, textvariable=color_var, width=90).grid(row=0, column=2, padx=4)
+            
+            ctk.CTkLabel(frame, text="Bottom Margin:", font=(FONT_FAMILY, 11)).grid(row=0, column=3, padx=(12, 4))
+            margin_var = ctk.StringVar(value=self.speaker_styles[sp]["marginV"])
+            ctk.CTkEntry(frame, textvariable=margin_var, width=60).grid(row=0, column=4, padx=4)
+            
+            def _save_sp(args1=None, args2=None, args3=None, s=sp, cv=color_var, mv=margin_var):
+                self.speaker_styles[s] = {"color": cv.get(), "marginV": mv.get()}
+                
+            color_var.trace_add("write", _save_sp)
+            margin_var.trace_add("write", _save_sp)
 
     def _open_glossary(self):
         """Open glossary management popup."""
@@ -981,7 +1098,7 @@ class App(ctk.CTk):
         self.translator_var = ctk.StringVar(value="Google Translate")
         ctk.CTkOptionMenu(
             translator_frame, variable=self.translator_var,
-            values=["Google Translate", "ChatGPT", "Ollama (gemma3:12b)", "Ollama (gemma3:27b)"],
+            values=["Google Translate", "ChatGPT", "Ollama (gemma3:4b)", "Ollama (gemma3:12b)", "Ollama (gemma3:27b)"],
             fg_color=COLORS["bg_dark"], button_color=COLORS["accent"],
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["panel"],
@@ -1031,12 +1148,33 @@ class App(ctk.CTk):
         self.whisper_menu.grid(row=1, column=0, sticky="ew", padx=4)
         self.whisper_frame.grid_remove() # hide by default
 
-    def _on_pipeline_mode_change(self, value):
-        """Show/hide Whisper model selector based on pipeline mode."""
-        self.whisper_frame.grid_remove()
+        # Row 3: Right = HuggingFace Token (shown conditionally)
+        self.hf_frame = ctk.CTkFrame(settings_container, fg_color="transparent")
+        self.hf_frame.grid(row=3, column=1, sticky="ew", pady=(0, 8), padx=4)
+        self.hf_frame.grid_columnconfigure(0, weight=1)
 
-        if value == "Audio Only (Whisper)":
+        self.hf_label = ctk.CTkLabel(
+            self.hf_frame, text="HF Token (Diarization)", font=(FONT_FAMILY, 10, "bold"),
+            text_color=COLORS["text_muted"],
+        )
+        self.hf_label.grid(row=0, column=0, padx=4, pady=(0, 2), sticky="w")
+
+        self.hf_token_entry = ctk.CTkEntry(
+            self.hf_frame, placeholder_text="hf_...",
+            fg_color=COLORS["bg_dark"], border_color=COLORS["border"],
+            text_color=COLORS["text_primary"], font=(FONT_FAMILY, 11), show="*"
+        )
+        self.hf_token_entry.grid(row=1, column=0, sticky="ew", padx=4)
+        self.hf_frame.grid_remove() # hide by default
+
+    def _on_pipeline_mode_change(self, value):
+        """Show/hide Whisper model & HF token selector based on pipeline mode."""
+        self.whisper_frame.grid_remove()
+        self.hf_frame.grid_remove()
+
+        if value in ["Audio Only (Whisper)", "Replace Subs (Full)"]:
             self.whisper_frame.grid()
+            self.hf_frame.grid()
 
     # ─── Log Panels (dual split) ─────────────────────────────────────────
 
@@ -1254,22 +1392,77 @@ class App(ctk.CTk):
         # Reconstruct SRT using original timestamps from source SRT
         source_blocks = re.split(r'\n\n+', self.current_srt_source.strip()) if self.current_srt_source else []
 
-        srt_lines = []
-        for i, entry in enumerate(self.translation_data):
-            srt_lines.append(str(i + 1))
-            # Use original timestamp line if available
-            if i < len(source_blocks):
-                block_lines = source_blocks[i].strip().split('\n')
-                if len(block_lines) >= 2:
-                    srt_lines.append(block_lines[1])  # Original timestamp
+        # Check if we should output .ass (if any speaker metadata exists)
+        use_ass = any(entry.get("speaker") and entry.get("speaker") != "Unknown" for entry in self.translation_data)
+        
+        if use_ass:
+            def srt_to_ass_time(srt_time):
+                parts = srt_time.split(',')
+                hms = parts[0]
+                if hms.startswith("0") and len(hms) == 8:
+                    hms = hms[1:] # ASS requires H:MM:SS, not HH:MM:SS
+                ms = parts[1][:2] if len(parts) > 1 else "00" # Centiseconds
+                return f"{hms}.{ms}"
+                
+            ass_lines = [
+                "[Script Info]",
+                "ScriptType: v4.00+",
+                "PlayResX: 1920",
+                "PlayResY: 1080",
+                "WrapStyle: 1",
+                "",
+                "[V4+ Styles]",
+                "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+                "Style: Default,Arial,22,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,1.2,1,2,10,10,15,1"
+            ]
+            for sp, st in self.speaker_styles.items():
+                c = st.get("color", "&H00FFFFFF")
+                m = st.get("marginV", "15")
+                ass_lines.append(f"Style: {sp},Arial,22,{c},&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,1.2,1,2,10,10,{m},1")
+                
+            ass_lines.extend(["", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"])
+            
+            for i, entry in enumerate(self.translation_data):
+                s_time, e_time = "00:00:00,000", "00:00:00,000"
+                if i < len(source_blocks):
+                    block_lines = source_blocks[i].strip().split('\n')
+                    if len(block_lines) >= 2:
+                        time_line = block_lines[1]
+                        parts = time_line.split(" --> ")
+                        s_time = parts[0].strip()
+                        if len(parts) > 1: e_time = parts[1].strip()
+                        
+                start = srt_to_ass_time(s_time)
+                end = srt_to_ass_time(e_time)
+                sp = entry.get("speaker", "Unknown")
+                style = sp if sp != "Unknown" else "Default"
+                text = entry["translated"].replace("\n", "\\N")
+                ass_lines.append(f"Dialogue: 0,{start},{end},{style},,0,0,0,,{text}")
+                
+            return "\n".join(ass_lines)
+            
+        else:
+            srt_lines = []
+            for i, entry in enumerate(self.translation_data):
+                srt_lines.append(str(i + 1))
+                if i < len(source_blocks):
+                    block_lines = source_blocks[i].strip().split('\n')
+                    if len(block_lines) >= 2:
+                        srt_lines.append(block_lines[1])  # Original timestamp
+                    else:
+                        srt_lines.append(f"{entry['timestamp_start']}:00,000 --> {entry['timestamp_end']}:00,000")
                 else:
                     srt_lines.append(f"{entry['timestamp_start']}:00,000 --> {entry['timestamp_end']}:00,000")
-            else:
-                srt_lines.append(f"{entry['timestamp_start']}:00,000 --> {entry['timestamp_end']}:00,000")
-            srt_lines.append(entry["translated"])
-            srt_lines.append("")  # Blank line separator
-
-        return "\n".join(srt_lines)
+                
+                # Append text (prefix with speaker if customized)
+                sp = entry.get("speaker", "Unknown")
+                text = entry["translated"]
+                if sp != "Unknown":
+                    text = f"[{sp}] {text}"
+                srt_lines.append(text)
+                srt_lines.append("")  # Blank line separator
+    
+            return "\n".join(srt_lines)
 
     def _show_continue_button(self):
         """Show the Continue Inpainting button in the editor toolbar."""
@@ -1497,8 +1690,9 @@ class App(ctk.CTk):
             self._log("   ❌ Audio extraction failed")
             return None
 
+        hf_token = self.hf_token_entry.get().strip()
         # Phase 1b: Transcribe
-        srt_content, detected_lang = transcribe_audio(audio_path, whisper_model, progress_cb)
+        srt_content, detected_lang = transcribe_audio(audio_path, whisper_model, progress_cb, hf_token=hf_token)
 
         # Clean up temp audio
         if os.path.exists(audio_path):
@@ -1575,7 +1769,8 @@ class App(ctk.CTk):
             self._log("   ❌ Audio extraction failed")
             return clean_video
 
-        srt_content, detected_lang = transcribe_audio(audio_path, "medium", progress_cb)
+        hf_token = self.hf_token_entry.get().strip()
+        srt_content, detected_lang = transcribe_audio(audio_path, "medium", progress_cb, hf_token=hf_token)
         if os.path.exists(audio_path):
             os.remove(audio_path)
 
