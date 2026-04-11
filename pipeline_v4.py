@@ -36,7 +36,7 @@ class SelectiveInpaintPipe:
         self.frame_skip = 2
         self.ocr_width = 1280 # Better resolution (like v2)
 
-    def extract_metadata(self, video_path, progress_callback=None):
+    def extract_metadata(self, video_path, progress_callback=None, cancel_event=None):
         """Pass 1: Detect subtitle boxes across the video."""
         def _log(msg):
             if progress_callback: progress_callback(msg)
@@ -54,6 +54,8 @@ class SelectiveInpaintPipe:
         debug_first = True  # Log the first OCR result for debugging
         
         while cap.isOpened():
+            if cancel_event and cancel_event.is_set():
+                break
             ret, frame = cap.read()
             if not ret: break
             
@@ -143,7 +145,7 @@ class SelectiveInpaintPipe:
         cap.release()
         return ocr_history, fps
 
-    def inpaint_and_render(self, video_path, ocr_history, translated_srt, progress_callback=None, output_dir=None):
+    def inpaint_and_render(self, video_path, ocr_history, translated_srt, progress_callback=None, output_dir=None, cancel_event=None):
         """Pass 2 & 3 Combined: Selective Inpainting + Final Encoding using 3-Tier Threading."""
         import queue
         import threading
@@ -153,17 +155,19 @@ class SelectiveInpaintPipe:
 
         _log("V4 Final Pass: Concurrent AI Inpainting + Subtitle Overlay...")
         
-        # Write SRT with UTF-8 BOM for FFmpeg compatibility
+        # Detect format
         has_srt = bool(translated_srt and translated_srt.strip())
+        is_ass = translated_srt.strip().startswith("[Script Info]") if has_srt else False
+        ext = "ass" if is_ass else "srt"
         
         base_name = os.path.basename(video_path)
         name_without_ext = os.path.splitext(base_name)[0]
         
         if output_dir:
-            temp_srt_path = os.path.join(output_dir, name_without_ext + "_v4_translated.srt")
+            temp_srt_path = os.path.join(output_dir, name_without_ext + f"_v4_translated.{ext}")
             output_path = os.path.join(output_dir, name_without_ext + "_v4_final.mp4")
         else:
-            temp_srt_path = video_path.replace(".mp4", "_v4_translated.srt")
+            temp_srt_path = video_path.replace(".mp4", f"_v4_translated.{ext}")
             output_path = video_path.replace(".mp4", "_v4_final.mp4")
             
         if has_srt:
@@ -183,11 +187,13 @@ class SelectiveInpaintPipe:
             for f in range(seg['start_frame'], seg['last_frame'] + 1):
                 frame_to_boxes[f] = seg['boxes']
         
-        style = "FontSize=22,PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV=15"
-        
-        # Build FFmpeg command — only add subtitles filter if we have SRT content
+        # Build FFmpeg command — only add subtitles filter if we have content
         if has_srt:
-            vf_filter = f"subtitles='{srt_abs}':force_style='{style}'"
+            if is_ass:
+                vf_filter = f"ass='{srt_abs}'"
+            else:
+                style = "FontSize=22,PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV=15"
+                vf_filter = f"subtitles='{srt_abs}':force_style='{style}'"
         else:
             vf_filter = "null"  # No-op filter (passthrough)
             _log("   ⚠ No subtitles to overlay, skipping subtitle filter")
@@ -215,6 +221,9 @@ class SelectiveInpaintPipe:
         def producer():
             idx = 0
             while cap.isOpened() and not stop_event.is_set():
+                if cancel_event and cancel_event.is_set():
+                    stop_event.set()
+                    break
                 ret, frame = cap.read()
                 if not ret: break
                 boxes = frame_to_boxes.get(idx)
