@@ -59,7 +59,8 @@ class AITranslator:
                         test_resp = requests.get(f"http://{host}:11434/api/tags", timeout=3)
                         if test_resp.status_code == 200:
                             print(f"DEBUG: Ollama server found on {host}")
-                            self.client = OpenAI(base_url=f"http://{host}:11434/v1", api_key="ollama", timeout=120.0)
+                            # Increase timeout to 300s (5 mins) for local models on slower hardware
+                            self.client = OpenAI(base_url=f"http://{host}:11434/v1", api_key="ollama", timeout=300.0)
                             found = True
                             break
                     except Exception:
@@ -88,16 +89,17 @@ class AITranslator:
                     print(f"DEBUG: Translation failed after {max_retries} retries: {err[:80]}")
         return None
 
-    def extract_character_context(self, texts, target_lang):
+    def extract_character_context(self, texts, target_lang, max_sample=None):
         """Run one focused AI call on a sample of the full transcript to extract
         a compact Character Sheet: names, relationships, and show tone.
-        Returns a plain-text string, or None if unavailable / failed."""
+        Returns (result_text, error_msg)."""
         if not texts or len(texts) < 3:
-            return None
+            return None, "Too few lines"
 
-        # Sample up to 200 lines spread across beginning / middle / end
-        # to stay within token limits while covering the full story arc.
-        max_sample = 200
+        # Adaptive sampling: 150 for GPT (vram not an issue), 80 for local models
+        if max_sample is None:
+            max_sample = 150 if self.model == "chatgpt" else 80
+            
         if len(texts) <= max_sample:
             sample = texts
         else:
@@ -107,42 +109,35 @@ class AITranslator:
         transcript_snippet = " ".join([t.replace("\n", " ") for t in sample])
 
         prompt = (
-            f"Read this TV/movie subtitle transcript excerpt and identify:\n"
-            f"1. All character names (with gender, age/role hints if discernible)\n"
-            f"2. Key relationships between characters (e.g. husband/wife, boss/employee)\n"
-            f"3. Overall show tone (e.g. romantic comedy, action thriller, historical drama)\n"
-            f"4. Any important recurring terms, titles, or honorifics\n\n"
-            f"Be concise. Use plain text only — no markdown, no JSON.\n"
-            f"If you cannot determine something with reasonable confidence, omit it.\n\n"
-            f"Target translation language: {target_lang}\n"
-            f"(Hint: correct pronoun/honorific choices in {target_lang} depend heavily on "
-            f"the speakers' ages and relationships, so be as specific as possible.)\n\n"
+            f"Analyze this transcript excerpt and summarize:\n"
+            f"1. Character names + gender/role\n"
+            f"2. Relationships (e.g. boss/employee, siblings)\n"
+            f"3. Tone and recurring honorifics for {target_lang}\n\n"
+            f"Be extremely concise. Plain text only.\n\n"
             f"--- TRANSCRIPT SAMPLE ---\n{transcript_snippet}\n--- END SAMPLE ---"
         )
 
-        system_msg = (
-            "You are an expert script analyst for TV and film. "
-            "Your sole task is to produce a concise, accurate Character Sheet "
-            "from the provided subtitle transcript."
-        )
+        system_msg = "You are an expert script analyst. Produce a concise Character Sheet."
 
         try:
-            print("DEBUG: Extracting character context...")
             response = self.client.chat.completions.create(
                 model=self.ollama_model if self.ollama_model else "gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.2,
+                temperature=0.1, # Lower temperature for facts
             )
             result = response.choices[0].message.content.strip()
             if result:
-                print(f"DEBUG: Character context extracted ({len(result)} chars)")
-                return result
+                return result, None
         except Exception as e:
-            print(f"DEBUG: Character extraction failed (non-fatal): {e}")
-        return None
+            err = str(e)
+            # Truncate common long errors
+            if "timeout" in err.lower(): err = "Timeout (local model slow)"
+            elif "memory" in err.lower(): err = "Out of VRAM (model too large)"
+            return None, err
+        return None, "Empty response"
 
     def _translate_batch_chatgpt(self, texts, target_lang, all_texts=None, prev_translations=None, character_context=None):
         prompt = f"""Translate the following JSON array of subtitle texts to {target_lang}. Return ONLY a valid JSON array of strings containing the translations in the exact same order.
@@ -157,12 +152,6 @@ class AITranslator:
             - CRITICALLY IMPORTANT: Return ONLY a valid JSON array of strings. Do not include any explanations, markdown formatting like ```json, or other text.
         """
         
-        if all_texts and len(all_texts) > 0:
-            prompt += "--- REFERENCE CONTEXT (Full Transcript) ---\n"
-            prompt += "The following is the full video transcript to help you establish a 'Terminology Memory'. Use this context to ensure the same translations for names and special terms are used consistently, and to understand the story, character relationships, and tone:\n"
-            prompt += " ".join([t.replace('\n', ' ') for t in all_texts])
-            prompt += "\n--------------------------\n\n"
-
         if character_context:
             prompt += "--- CHARACTER SHEET (auto-extracted) ---\n"
             prompt += "Use the character names, relationships, and tone below to choose the correct pronouns, honorifics, and register for every translated line:\n"
@@ -226,11 +215,8 @@ Guidelines:
 - CRITICALLY IMPORTANT: Return ONLY a valid JSON array of {len(texts)} strings. No explanations, no markdown, no extra text.
 """
 
-        if all_texts and len(all_texts) > 0:
-            prompt += "--- REFERENCE CONTEXT (Full Transcript) ---\n"
-            prompt += "The following is the full video transcript to help you establish a 'Terminology Memory'. Use this context to ensure the same translations for names and special terms are used consistently, and to understand the story, character relationships, and tone:\n"
-            prompt += " ".join([t.replace('\n', ' ') for t in all_texts])
-            prompt += "\n--------------------------\n\n"
+        # Removed Full Transcript context here to significantly speed up processing.
+        # Consistency is now handled by the Character Sheet and sliding window below.
 
         if character_context:
             prompt += "--- CHARACTER SHEET (auto-extracted) ---\n"
@@ -339,12 +325,17 @@ Guidelines:
         character_context = None
         if self.model != "google":
             _log("Analyzing characters and relationships...")
-            character_context = self.extract_character_context(texts, target_lang)
+            character_context, err = self.extract_character_context(texts, target_lang)
+            
+            # Retry with micro-sample if first attempt failed
+            if not character_context and self.model.startswith("ollama:"):
+                _log(f"⚠ Extraction failed ({err}). Retrying with 20-line micro-sample...")
+                character_context, err = self.extract_character_context(texts, target_lang, max_sample=20)
+
             if character_context:
                 _log(f"✓ Character sheet extracted ({len(character_context)} chars)")
-                print(f"DEBUG: Character sheet:\n{character_context}")
             else:
-                _log("⚠ Character extraction skipped or failed — continuing without it")
+                _log(f"⚠ Character info skipped: {err or 'Unknown error'}")
 
         start_time = time.time()
 
@@ -353,8 +344,8 @@ Guidelines:
             BATCH_SIZE = 30
             CONTEXT_WINDOW = 8  # Last 8 translated pairs as context for next batch
         elif self.model.startswith("ollama:"):
-            BATCH_SIZE = 5
-            CONTEXT_WINDOW = 3  # Smaller window for local models
+            BATCH_SIZE = 10
+            CONTEXT_WINDOW = 5  # Sliding window is now more efficient
         else:
             BATCH_SIZE = 10
             CONTEXT_WINDOW = 0  # Google Translate doesn't use context
@@ -376,7 +367,7 @@ Guidelines:
                     })
             
             if self.model == "chatgpt":
-                parts = self._translate_batch_chatgpt(batch, target_lang, all_texts=texts, prev_translations=prev_translations, character_context=character_context)
+                parts = self._translate_batch_chatgpt(batch, target_lang, prev_translations=prev_translations, character_context=character_context)
                 if parts:
                     translated_texts.extend(parts)
                 else:
@@ -386,7 +377,7 @@ Guidelines:
                         translated_texts.append(individual if individual else text)
                         time.sleep(1.0)
             elif self.model.startswith("ollama:"):
-                parts = self._translate_batch_ollama(batch, target_lang, all_texts=texts, prev_translations=prev_translations, character_context=character_context)
+                parts = self._translate_batch_ollama(batch, target_lang, prev_translations=prev_translations, character_context=character_context)
                 if parts:
                     translated_texts.extend(parts)
                 else:
