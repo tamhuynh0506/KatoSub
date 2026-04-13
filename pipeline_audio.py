@@ -49,7 +49,7 @@ def format_timestamp_srt(seconds):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def extract_audio(video_path, progress_callback=None):
+def extract_audio(video_path, progress_callback=None, cancel_event=None):
     """Extract audio from video to a temporary WAV file using FFmpeg."""
     def _log(msg):
         if progress_callback:
@@ -59,7 +59,7 @@ def extract_audio(video_path, progress_callback=None):
     _log("Extracting audio from video...")
 
     cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg", "-y", "-loglevel", "error",
         "-i", video_path,
         "-vn",                      # No video
         "-acodec", "pcm_s16le",     # 16-bit PCM (Whisper expects this)
@@ -69,12 +69,23 @@ def extract_audio(video_path, progress_callback=None):
     ]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=300)
-        if result.returncode != 0:
-            _log(f"FFmpeg audio extraction error: {result.stderr[:200]}")
+        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        while True:
+            try:
+                process.wait(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel_event and cancel_event.is_set():
+                    _log("   ⚠ Cancellation detected, terminating audio extraction...")
+                    process.terminate()
+                    return None
+        
+        if process.returncode != 0:
+            _log(f"FFmpeg audio extraction failed (code {process.returncode})")
             return None
-    except subprocess.TimeoutExpired:
-        _log("Audio extraction timed out (>5 min)")
+    except Exception as e:
+        _log(f"Audio extraction exception: {e}")
         return None
 
     if os.path.exists(audio_path):
@@ -201,7 +212,7 @@ def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=No
     return srt_content, detected_lang
 
 
-def render_subtitles(video_path, srt_content, progress_callback=None, output_dir=None):
+def render_subtitles(video_path, srt_content, progress_callback=None, output_dir=None, cancel_event=None):
     """Render translated subtitles onto the video using FFmpeg (no inpainting needed)."""
     def _log(msg):
         if progress_callback:
@@ -309,6 +320,17 @@ def render_subtitles(video_path, srt_content, progress_callback=None, output_dir
             if "Error" in line or "failed" in line.lower():
                 _log(f"   FFmpeg: {line}")
 
+            if cancel_event and cancel_event.is_set():
+                _log("   ⚠ Cancellation detected, terminating FFmpeg...")
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                return None
+
         returncode = process.wait()
 
         if returncode != 0:
@@ -331,7 +353,7 @@ def render_subtitles(video_path, srt_content, progress_callback=None, output_dir
 
 
 def run_audio_pipeline(video_path, target_lang, translator_model="google",
-                       whisper_model="base", progress_callback=None, output_dir=None):
+                       whisper_model="base", progress_callback=None, output_dir=None, cancel_event=None):
     """
     Full audio transcription + translation pipeline:
     1. Extract audio from video
@@ -348,7 +370,7 @@ def run_audio_pipeline(video_path, target_lang, translator_model="google",
 
     # --- Step 1: Extract audio ---
     _log("Step 1/4: Extracting audio...")
-    audio_path = extract_audio(video_path, progress_callback)
+    audio_path = extract_audio(video_path, progress_callback, cancel_event=cancel_event)
     if not audio_path:
         _log("Failed to extract audio from video!")
         return None
@@ -401,7 +423,7 @@ def run_audio_pipeline(video_path, target_lang, translator_model="google",
 
     # --- Step 4: Render subtitles ---
     _log("Step 4/4: Rendering subtitles onto video...")
-    result = render_subtitles(video_path, translated_srt, progress_callback, output_dir=output_dir)
+    result = render_subtitles(video_path, translated_srt, progress_callback, output_dir=output_dir, cancel_event=cancel_event)
 
     elapsed = time.time() - overall_start
     if result:
