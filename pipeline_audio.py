@@ -1,7 +1,7 @@
 import os
 import time
 import subprocess
-import whisper
+from faster_whisper import WhisperModel
 import cv2
 from ai_translator import AITranslator
 
@@ -84,7 +84,7 @@ def extract_audio(video_path, progress_callback=None):
     return None
 
 
-def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=None, hf_token=None):
+def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=None):
     """Transcribe audio using Whisper and return SRT-formatted content.
     
     Uses word-level timestamps for precise timing and applies a small delay
@@ -98,43 +98,56 @@ def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=No
         if progress_callback:
             progress_callback(msg)
 
-    _log(f"Loading Whisper model: {whisper_model_name}...")
+    _log(f"Loading Faster-Whisper model: {whisper_model_name}...")
     start_time = time.time()
-    model = whisper.load_model(whisper_model_name)
+    
+    # Select device and compute type for maximum performance on RTX 3050
+    # Use float16 for GPU to halve VRAM usage and boost speed.
+    try:
+        device = "cuda"
+        compute_type = "float16"
+        model = WhisperModel(whisper_model_name, device=device, compute_type=compute_type)
+    except Exception as e:
+        _log(f"   ⚠ CUDA/Float16 init failed, falling back to CPU: {e}")
+        model = WhisperModel(whisper_model_name, device="cpu", compute_type="int8")
+
     load_time = time.time() - start_time
     _log(f"Whisper model loaded in {load_time:.1f}s")
 
-    _log("Transcribing audio (this may take a while)...")
+    _log("Transcribing audio (optimized engine)...")
     start_time = time.time()
-    result = model.transcribe(
+    
+    # Run the transcription engine
+    segments_gen, info = model.transcribe(
         audio_path,
-        verbose=False,
-        word_timestamps=True,           # More precise timing per word
-        no_speech_threshold=0.4,        # LOWERED: Less aggressive at discarding quiet speech
-        condition_on_previous_text=True, # Better context continuity
-        beam_size=5,                    # Evaluate more paths to prevent hallucination drops
-        initial_prompt="Hello, welcome to my video. Let's get started, okay? This is a test. Wait, what did you say?", # Force punctuation and sentence structure
+        beam_size=5,
+        word_timestamps=True,
+        condition_on_previous_text=True,
+        initial_prompt="Hello, welcome to my video. Let's get started, okay? This is a test. Wait, what did you say?",
     )
-    transcribe_time = time.time() - start_time
+    
+    # Convert generator to list of dicts for easier manipulation (diarization, etc.)
+    segments = []
+    for s in segments_gen:
+        seg_dict = {
+            "start": s.start,
+            "end": s.end,
+            "text": s.text,
+            "words": [{"start": w.start, "end": w.end, "word": w.word} for w in s.words] if s.words else []
+        }
+        segments.append(seg_dict)
 
-    segments = result.get("segments", [])
-    detected_lang = result.get("language", "unknown")
+    detected_lang = info.language
+    
+    transcribe_time = time.time() - start_time
     _log(f"Transcription complete in {transcribe_time:.1f}s | "
-         f"Language: {detected_lang} | {len(segments)} segments detected")
+         f"Language: {detected_lang} ({info.language_probability:.2f}) | {len(segments)} segments")
 
     if not segments:
         _log("No speech detected in audio!")
         return "", detected_lang
 
-    # Run Diarization if requested
-    if hf_token and hf_token.strip():
-        try:
-            from pipeline_diarization import run_diarization, merge_whisper_speakers
-            diarization = run_diarization(audio_path, hf_token.strip(), progress_callback)
-            if diarization:
-                segments = merge_whisper_speakers(segments, diarization)
-        except Exception as e:
-            _log(f"   ⚠ Diarization module failed: {e}")
+    # Removed Diarization block to simplify the pipeline.
 
     # Build SRT content from Whisper segments with timing correction
     srt_lines = []
@@ -145,7 +158,6 @@ def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=No
             continue
 
         # Use the first word's timestamp as the real start of speech
-        # This is more accurate than the segment-level start time
         words = seg.get("words", [])
         if words:
             # First word start = when speech actually begins
@@ -168,11 +180,7 @@ def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=No
         start = format_timestamp_srt(seg_start)
         end = format_timestamp_srt(seg_end)
         
-        speaker = seg.get("speaker")
-        if speaker and speaker != "Unknown":
-            text_out = f"[{speaker}] {text}"
-        else:
-            text_out = text
+        text_out = text
 
         srt_lines.append(f"{srt_idx}")
         srt_lines.append(f"{start} --> {end}")

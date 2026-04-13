@@ -35,5 +35,5 @@ transformers==5.3.0
 sentencepiece==0.2.1
 accelerate==1.13.0
 
-# Audio transcription (Whisper - local GPU, no API key needed)
-openai-whisper==20250625
+# Audio transcription (Whisper - optimized local GPU engine)
+faster-whisper==1.0.3
