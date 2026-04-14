@@ -1524,7 +1524,7 @@ class App(ctk.CTk):
         # Fill the editor and preview on the main thread
         self.after(0, lambda s=srt_source, t=srt_translated: self._load_translation_data(s, t))
         
-        # Initialize preview with first segment
+        # Initialize preview
         if self.pipeline_context.get('segments'):
             first_seg = self.pipeline_context['segments'][0]
             # Initialize preview_box from first segment's bbox
@@ -1539,6 +1539,12 @@ class App(ctk.CTk):
                 ]
             
             self.after(100, lambda: self._render_preview_frame(first_seg.get('start_frame', 0)))
+        elif self.translation_data:
+            # Fallback for modes without bounding box segments (like Audio Only)
+            self.preview_box = [0.1, 0.7, 0.9, 0.9] # Default box
+            time_str = self.translation_data[0].get("timestamp_start", "")
+            frame_idx = self._time_to_frame(time_str)
+            self.after(100, lambda: self._render_preview_frame(frame_idx))
 
         self.after(200, self._show_continue_button)
 
@@ -1611,12 +1617,28 @@ class App(ctk.CTk):
         if edited_srt is None:  # Cancelled
             return None
 
+        # Compute dynamic styles from preview_box
+        x1, y1, x2, y2 = self.preview_box
+        
+        # FFmpeg/libass defaults to a 288-height coordinate space when rendering SRT via force_style.
+        # We must scale our normalized coordinates to 288, NOT the absolute video height.
+        ASS_PLAYRES_Y = 288
+        
+        margin_v = int((1.0 - y2) * ASS_PLAYRES_Y)
+        if margin_v < 0: margin_v = 15
+        
+        box_h_ass = (y2 - y1) * ASS_PLAYRES_Y
+        font_size = int(box_h_ass * 0.75)
+        if font_size < 12: font_size = 22
+        
+        style_override = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV={margin_v}"
+
         # Phase 2: Inpainting + Rendering with edited subtitles
         self._log("   Phase 2: AI Inpainting + Subtitle Rendering")
         result = pipe.inpaint_and_render(
             video_path, segments, edited_srt,
             progress_callback=progress_cb, output_dir=output_dir,
-            cancel_event=self.cancel_event
+            cancel_event=self.cancel_event, style_override=style_override
         )
         return result
 
@@ -1670,9 +1692,28 @@ class App(ctk.CTk):
         if edited_srt is None:
             return None
 
+        # Compute dynamic styles from preview_box
+        x1, y1, x2, y2 = self.preview_box
+        
+        # FFmpeg/libass defaults to a 288-height coordinate space when rendering SRT via force_style.
+        ASS_PLAYRES_Y = 288
+        
+        margin_v = int((1.0 - y2) * ASS_PLAYRES_Y)
+        if margin_v < 0: margin_v = 15
+        
+        box_h_ass = (y2 - y1) * ASS_PLAYRES_Y
+        font_size = int(box_h_ass * 0.75)
+        if font_size < 12: font_size = 22
+        
+        style_override = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV={margin_v}"
+
         # Phase 2: Render subtitles onto video
-        self._log("   Phase 2: Rendering subtitles onto video")
-        result = render_subtitles(video_path, edited_srt, progress_cb, output_dir=output_dir, cancel_event=self.cancel_event)
+        self._log("   Phase 2: Rendering subtitles onto video (Audio Mode)")
+        result = render_subtitles(
+            video_path, edited_srt, progress_cb, 
+            output_dir=output_dir, cancel_event=self.cancel_event,
+            style_override=style_override
+        )
         return result
 
     def _run_replace_subs_split(self, video_path, target_code, translator_model,
@@ -1855,54 +1896,111 @@ class App(ctk.CTk):
 
     # ─── Preview Panel Logic ──────────────────────────────────────────────
 
+    def _time_to_frame(self, time_str):
+        """Convert an SRT timestamp to a video frame index."""
+        if not time_str: return 0
+        try:
+            time_str = time_str.replace('.', ',')
+            h, m, s_ms = time_str.split(":")
+            if "," in s_ms:
+                s, ms = s_ms.split(",")
+            else:
+                s, ms = s_ms, 0
+            total_sec = int(h)*3600 + int(m)*60 + int(s) + int(ms)/1000.0
+            
+            fps = 30 # Fallback
+            if getattr(self, 'preview_cap', None):
+                fps = self.preview_cap.get(cv2.CAP_PROP_FPS) or 30
+            elif self.pipeline_context.get('video_path'):
+                cap = cv2.VideoCapture(self.pipeline_context['video_path'])
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30
+                cap.release()
+                
+            return int(total_sec * fps)
+        except Exception as e:
+            self._log(f"   [Debug] _time_to_frame error on '{time_str}': {e}")
+            return 0
+
     def _on_row_click(self, index):
         """Update preview to show the frame for the clicked segment."""
-        if not self.pipeline_context.get('segments'):
-            return
-        
-        segments = self.pipeline_context['segments']
-        if index < len(segments):
-            seg = segments[index]
-            frame_idx = seg.get('start_frame', 0)
-            self.after(0, lambda f=frame_idx: self._render_preview_frame(f))
+        frame_idx = 0
+        if self.pipeline_context.get('segments'):
+            segments = self.pipeline_context['segments']
+            if index < len(segments):
+                seg = segments[index]
+                frame_idx = seg.get('start_frame', 0)
+        elif self.translation_data and index < len(self.translation_data):
+            # Audio-only mode fallback
+            time_str = self.translation_data[index].get("timestamp_start", "")
+            frame_idx = self._time_to_frame(time_str)
+
+        self.after(0, lambda f=frame_idx: self._render_preview_frame(f))
 
     def _extract_preview_frame(self, video_path, frame_idx):
         """Extract a single frame from the video using CV2."""
-        if not self.preview_cap or self.pipeline_context.get('last_video') != video_path:
-            if self.preview_cap: self.preview_cap.release()
-            self.preview_cap = cv2.VideoCapture(video_path)
-            self.pipeline_context['last_video'] = video_path
-        
-        self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = self.preview_cap.read()
-        if ret:
-            # Convert BGR (OpenCV) to RGB (PIL)
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            return Image.fromarray(frame_rgb)
-        return None
+        try:
+            if not getattr(self, 'preview_cap', None) or self.pipeline_context.get('last_video') != video_path:
+                if getattr(self, 'preview_cap', None): self.preview_cap.release()
+                self.preview_cap = cv2.VideoCapture(video_path)
+                self.pipeline_context['last_video'] = video_path
+            
+            self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = self.preview_cap.read()
+            
+            if not ret:
+                self._log(f"   [Debug] OpenCV failed to read frame {frame_idx}. Trying fallback...")
+                # Re-initialize the capture to reset its state
+                self.preview_cap.release()
+                self.preview_cap = cv2.VideoCapture(video_path)
+                ret, frame = self.preview_cap.read() # Read frame 0
+            
+            if ret:
+                # Convert BGR (OpenCV) to RGB (PIL)
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                return Image.fromarray(frame_rgb)
+            else:
+                self._log(f"   [Debug] OpenCV failed fallback read from {video_path}")
+                return None
+        except Exception as e:
+            self._log(f"   [Debug] Exception in _extract_preview_frame: {e}")
+            return None
 
     def _render_preview_frame(self, frame_idx):
         """Render a video frame onto the canvas and draw the resizable box."""
-        if not self.pipeline_context.get('video_path') or not self.preview_canvas.winfo_exists():
+        self._log(f"   [Debug] _render_preview_frame called for frame {frame_idx}")
+        
+        if not self.pipeline_context.get('video_path'):
+            self._log("   [Debug] No video_path in pipeline_context")
+            return
+            
+        if not self.preview_canvas.winfo_exists():
+            self._log("   [Debug] preview_canvas does not exist")
             return
 
         # Ensure UI dimensions are accurate
         self.preview_canvas.update_idletasks()
 
         img = self._extract_preview_frame(self.pipeline_context['video_path'], frame_idx)
-        if not img: return
+        if not img:
+            self._log(f"   [Debug] No image returned for frame {frame_idx}.")
+            return
         
         self.preview_frame_data = img
 
         # Scale image to fit canvas while maintaining aspect ratio
         canvas_w = self.preview_canvas.winfo_width()
         canvas_h = self.preview_canvas.winfo_height()
+        
+        self._log(f"   [Debug] pre-fallback Canvas dimensions: {canvas_w}x{canvas_h}")
+        
         if canvas_w < 10: canvas_w = 400 # Fallback
         if canvas_h < 10: canvas_h = 320
 
         img_w, img_h = img.size
         scale = min(canvas_w / img_w, canvas_h / img_h)
         new_w, new_h = int(img_w * scale), int(img_h * scale)
+        
+        self._log(f"   [Debug] Scaling image from {img_w}x{img_h} to {new_w}x{new_h}. Target center: {canvas_w//2},{canvas_h//2}")
         
         # Center the image
         self.preview_img_offset = ((canvas_w - new_w) // 2, (canvas_h - new_h) // 2)
@@ -1912,10 +2010,11 @@ class App(ctk.CTk):
         self.preview_tk_img = ImageTk.PhotoImage(resized)
 
         self.preview_canvas.delete("all")
-        self.preview_canvas.create_image(
+        img_id = self.preview_canvas.create_image(
             canvas_w // 2, canvas_h // 2, 
-            image=self.preview_tk_img, anchor="center"
+            image=self.preview_tk_img, anchor="center", tags="preview_image"
         )
+        self._log(f"   [Debug] Drawn image on canvas with ID: {img_id}")
         
         self._draw_box()
 

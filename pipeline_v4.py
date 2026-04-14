@@ -145,7 +145,7 @@ class SelectiveInpaintPipe:
         cap.release()
         return ocr_history, fps
 
-    def inpaint_and_render(self, video_path, ocr_history, translated_srt, progress_callback=None, output_dir=None, cancel_event=None):
+    def inpaint_and_render(self, video_path, ocr_history, translated_srt, progress_callback=None, output_dir=None, cancel_event=None, style_override=None):
         """Pass 2 & 3 Combined: Selective Inpainting + Final Encoding using 3-Tier Threading."""
         import queue
         import threading
@@ -192,7 +192,7 @@ class SelectiveInpaintPipe:
             if is_ass:
                 vf_filter = f"ass='{srt_abs}'"
             else:
-                style = "FontSize=22,PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV=15"
+                style = style_override if style_override else "FontSize=22,PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV=15"
                 vf_filter = f"subtitles='{srt_abs}':force_style='{style}'"
         else:
             vf_filter = "null"  # No-op filter (passthrough)

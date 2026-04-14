@@ -212,7 +212,7 @@ def transcribe_audio(audio_path, whisper_model_name="base", progress_callback=No
     return srt_content, detected_lang
 
 
-def render_subtitles(video_path, srt_content, progress_callback=None, output_dir=None, cancel_event=None):
+def render_subtitles(video_path, srt_content, progress_callback=None, output_dir=None, cancel_event=None, style_override=None):
     """Render translated subtitles onto the video using FFmpeg (no inpainting needed)."""
     def _log(msg):
         if progress_callback:
@@ -252,7 +252,7 @@ def render_subtitles(video_path, srt_content, progress_callback=None, output_dir
     if is_ass:
         vf_filter = f"ass='{srt_abs}'"
     else:
-        style = "FontSize=22,PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV=15"
+        style = style_override if style_override else "FontSize=22,PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV=15"
         vf_filter = f"subtitles='{srt_abs}':force_style='{style}'"
 
     cmd = [
