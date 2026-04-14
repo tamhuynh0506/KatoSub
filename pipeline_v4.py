@@ -145,7 +145,7 @@ class SelectiveInpaintPipe:
         cap.release()
         return ocr_history, fps
 
-    def inpaint_and_render(self, video_path, ocr_history, translated_srt, progress_callback=None, output_dir=None, cancel_event=None):
+    def inpaint_and_render(self, video_path, ocr_history, translated_srt, progress_callback=None, output_dir=None, cancel_event=None, style_override=None):
         """Pass 2 & 3 Combined: Selective Inpainting + Final Encoding using 3-Tier Threading."""
         import queue
         import threading
@@ -192,7 +192,7 @@ class SelectiveInpaintPipe:
             if is_ass:
                 vf_filter = f"ass='{srt_abs}'"
             else:
-                style = "FontSize=22,PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV=15"
+                style = style_override if style_override else "FontSize=22,PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV=15"
                 vf_filter = f"subtitles='{srt_abs}':force_style='{style}'"
         else:
             vf_filter = "null"  # No-op filter (passthrough)
@@ -276,6 +276,16 @@ class SelectiveInpaintPipe:
         
         # Monitoring loop with real progress
         while t3.is_alive():
+            if cancel_event and cancel_event.is_set():
+                _log("   ⚠ Cancellation detected, terminating V4 pipeline...")
+                stop_event.set()
+                pipe.terminate()
+                try:
+                    pipe.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pipe.kill()
+                break
+            
             with frames_done_lock:
                 done = frames_done[0]
             if done > 0:
@@ -289,9 +299,13 @@ class SelectiveInpaintPipe:
                 _log(f"Inpainting & Rendering: {pct}% ({done}/{total_frames}) | {curr_fps:.1f} FPS{eta_str}")
             time.sleep(1.0)
             
-        t1.join(); t2.join(); t3.join()
+        t1.join(timeout=1); t2.join(timeout=1); t3.join(timeout=1)
         pipe.wait()
         cap.release()
+        
+        if cancel_event and cancel_event.is_set():
+            if os.path.exists(output_path): os.remove(output_path)
+            return None
         
         final_mp4 = output_path.replace("_v4_final.mp4", "_v4_complete.mp4")
         audio_cmd = ['ffmpeg', '-y', '-i', output_path, '-i', video_path, '-map', '0:v', '-map', '1:a', '-c', 'copy', final_mp4]
@@ -332,12 +346,12 @@ class SelectiveInpaintPipe:
         
         return result
 
-def run_v4(video_path, target_lang, translator_model="google", progress_callback=None, output_dir=None):
+def run_v4(video_path, target_lang, translator_model="google", progress_callback=None, output_dir=None, cancel_event=None):
     def _log(msg):
         if progress_callback: progress_callback(msg)
     
     pipe = SelectiveInpaintPipe()
-    ocr_history, fps = pipe.extract_metadata(video_path, progress_callback)
+    ocr_history, fps = pipe.extract_metadata(video_path, progress_callback, cancel_event=cancel_event)
     
     _log(f"   OCR detected text on {len(ocr_history)} frames")
     
@@ -364,5 +378,5 @@ def run_v4(video_path, target_lang, translator_model="google", progress_callback
         f.write(translated_srt)
     _log(f"   📄 Debug SRTs saved: _debug_original.srt & _debug_translated.srt")
     
-    return pipe.inpaint_and_render(video_path, segments, translated_srt, progress_callback, output_dir=output_dir)
+    return pipe.inpaint_and_render(video_path, segments, translated_srt, progress_callback, output_dir=output_dir, cancel_event=cancel_event)
 

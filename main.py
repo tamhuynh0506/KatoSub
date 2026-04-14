@@ -15,6 +15,7 @@ import shutil
 import re
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageOps, ImageTk
+import cv2
 
 # Granular pipeline imports for split-phase execution
 from pipeline_v4 import SelectiveInpaintPipe
@@ -261,6 +262,15 @@ class App(ctk.CTk):
 
         # ── Pipeline split-phase context ──
         self.pipeline_context = {}  # Stores intermediate data between phases
+        
+        # ── Preview & Region Adjustment State ──
+        self.preview_cap = None
+        self.preview_frame_data = None # PIL image
+        self.preview_canvas_id = None
+        self.preview_rect_id = None
+        self.preview_box = [0.1, 0.7, 0.9, 0.9] # Default [x1, y1, x2, y2] normalized
+        self.active_handle = None # 'nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'
+        self.is_resizing = False
 
         # ── Layout: header + content + bottom bar ──
         self.grid_columnconfigure(0, weight=1)
@@ -487,9 +497,10 @@ class App(ctk.CTk):
 
     def _build_translation_editor(self, parent):
         panel = ctk.CTkFrame(parent, fg_color=COLORS["panel"], corner_radius=12)
-        panel.grid(row=0, column=2, sticky="nsew", pady=(0, 6))
+        panel.grid(row=0, column=2, rowspan=2, sticky="nsew", pady=(0, 0))
         panel.grid_columnconfigure(0, weight=1)
-        panel.grid_rowconfigure(1, weight=1)
+        panel.grid_rowconfigure(1, weight=0) # Preview
+        panel.grid_rowconfigure(2, weight=1) # Editor
 
         # Header bar
         header = ctk.CTkFrame(panel, fg_color=COLORS["panel_header"], corner_radius=8)
@@ -498,7 +509,7 @@ class App(ctk.CTk):
         header.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
-            header, text="Interactive Translation Editor",
+            header, text="Subtitle AI Processing & Editor",
             font=(FONT_FAMILY, 13, "bold"), text_color=COLORS["text_primary"],
         ).grid(row=0, column=0, padx=12, pady=8, sticky="w")
 
@@ -552,9 +563,37 @@ class App(ctk.CTk):
         # Hidden by default, shown when pipeline is waiting for user review
         self.continue_btn.pack_forget()
 
+        # ─── New: Region Preview Panel ───
+        self.preview_container = ctk.CTkFrame(panel, fg_color=COLORS["bg_dark"], corner_radius=8)
+        self.preview_container.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.preview_container.grid_columnconfigure(0, weight=1)
+        self.preview_container.grid_rowconfigure(0, weight=1)
+        self.preview_container.configure(height=320) # Big area
+        
+        self.preview_canvas = tk.Canvas(
+            self.preview_container, bg=COLORS["bg_dark"],
+            highlightthickness=1, highlightbackground=COLORS["border"]
+        )
+        self.preview_canvas.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        
+        # Canvas Bindings for Resizing Box
+        self.preview_canvas.bind("<Button-1>", self._on_canvas_click)
+        self.preview_canvas.bind("<B1-Motion>", self._on_canvas_drag)
+        self.preview_canvas.bind("<ButtonRelease-1>", self._on_canvas_release)
+        self.preview_canvas.bind("<Motion>", self._on_canvas_hover)
+        
+        # Ensure container doesn't collapse
+        self.preview_container.grid_propagate(False)
+
+        # Editor container (headers + scroll)
+        editor_container = ctk.CTkFrame(panel, fg_color="transparent")
+        editor_container.grid(row=2, column=0, sticky="nsew")
+        editor_container.grid_columnconfigure(0, weight=1)
+        editor_container.grid_rowconfigure(1, weight=1)
+
         # Column headers for source / translated
-        col_header = ctk.CTkFrame(panel, fg_color=COLORS["panel_header"], corner_radius=6, height=30)
-        col_header.grid(row=1, column=0, sticky="new", padx=8, pady=(2, 0))
+        col_header = ctk.CTkFrame(editor_container, fg_color=COLORS["panel_header"], corner_radius=6, height=30)
+        col_header.grid(row=0, column=0, sticky="new", padx=8, pady=(2, 0))
         col_header.grid_columnconfigure(0, weight=0, minsize=70)
         col_header.grid_columnconfigure(1, weight=1)
         col_header.grid_columnconfigure(2, weight=0, minsize=70)
@@ -584,7 +623,7 @@ class App(ctk.CTk):
 
         # Scrollable editor rows
         self.editor_scroll = ctk.CTkScrollableFrame(
-            panel, fg_color=COLORS["bg_dark"], corner_radius=8,
+            editor_container, fg_color=COLORS["bg_dark"], corner_radius=8,
             scrollbar_button_color=COLORS["border"],
             scrollbar_button_hover_color=COLORS["accent"],
         )
@@ -594,7 +633,7 @@ class App(ctk.CTk):
         self.editor_scroll.grid_columnconfigure(2, weight=1)
         self.editor_scroll.grid_columnconfigure(3, weight=0, minsize=70)
         self.editor_scroll.grid_columnconfigure(4, weight=1)
-        panel.grid_rowconfigure(1, weight=1)
+        editor_container.grid_rowconfigure(1, weight=1)
 
         # Show placeholder
         self._render_editor_placeholder()
@@ -655,7 +694,6 @@ class App(ctk.CTk):
             })
 
         self._render_translation_rows()
-        self._translation_log("Translation editor loaded with {} entries.".format(len(self.translation_data)))
 
     def _parse_srt(self, srt_content):
         """Parse SRT content into a list of dicts with time_start, time_end, text, and speaker."""
@@ -747,9 +785,11 @@ class App(ctk.CTk):
             trans_entry.grid(row=grid_row, column=3, padx=(4, 12), pady=2, sticky="ew")
             trans_entry.insert(0, entry["translated"])
 
-            # Bind edit tracking
+            # Bind edit tracking and preview jumping
             idx = i
             trans_entry.bind("<FocusOut>", lambda e, _i=idx: self._on_translation_edit(_i, e.widget.get()))
+            trans_entry.bind("<Button-1>", lambda e, _i=idx: self._on_row_click(_i))
+            src_entry.bind("<Button-1>", lambda e, _i=idx: self._on_row_click(_i))
 
             self.translation_entry_widgets.append(trans_entry)
 
@@ -761,7 +801,6 @@ class App(ctk.CTk):
                 self.undo_stack.append({"index": index, "old": old_text, "new": new_text})
                 self.redo_stack.clear()
                 self.translation_data[index]["translated"] = new_text
-                self._translation_log(f"Edited line {index + 1}")
 
     def _undo_translation(self):
         """Undo last translation edit."""
@@ -777,7 +816,6 @@ class App(ctk.CTk):
             w = self.translation_entry_widgets[idx]
             w.delete(0, "end")
             w.insert(0, action["old"])
-        self._translation_log(f"Undo: line {idx + 1}")
 
     def _redo_translation(self):
         """Redo last undone translation edit."""
@@ -792,7 +830,6 @@ class App(ctk.CTk):
             w = self.translation_entry_widgets[idx]
             w.delete(0, "end")
             w.insert(0, action["new"])
-        self._translation_log(f"Redo: line {idx + 1}")
 
 
     def _open_glossary(self):
@@ -841,7 +878,6 @@ class App(ctk.CTk):
                 src_entry.delete(0, "end")
                 tgt_entry.delete(0, "end")
                 _refresh_glossary_list()
-                self._translation_log(f"Glossary: added '{s}' → '{t}'")
 
         ctk.CTkButton(
             add_frame, text="+ Add", width=60, height=28,
@@ -905,8 +941,6 @@ class App(ctk.CTk):
                     w.delete(0, "end")
                     w.insert(0, modified)
                 count += 1
-
-        self._translation_log(f"Glossary applied: {count} entries modified")
         if popup:
             popup.destroy()
 
@@ -948,8 +982,6 @@ class App(ctk.CTk):
 
         with open(file_path, "w", encoding="utf-8-sig") as f:
             f.write("\n".join(srt_lines))
-
-        self._translation_log(f"Exported edited SRT to {os.path.basename(file_path)}")
 
     # ─── Settings Panel ───────────────────────────────────────────────────
 
@@ -1116,7 +1148,7 @@ class App(ctk.CTk):
     def _build_log_panels(self, parent):
         # Left: Pipeline Processing Log (Maps to Queue in Col 1)
         left_log = ctk.CTkFrame(parent, fg_color=COLORS["panel"], corner_radius=12)
-        left_log.grid(row=1, column=1, sticky="nsew", padx=(0, 4), pady=(0, 0))
+        left_log.grid(row=1, column=1, sticky="nsew", padx=(0, 6), pady=(0, 0))
         left_log.grid_columnconfigure(0, weight=1)
         left_log.grid_rowconfigure(1, weight=1)
 
@@ -1132,25 +1164,6 @@ class App(ctk.CTk):
         )
         self.log_console.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
         self.log_console.configure(state="disabled")
-
-        # Right: Translation Log (Maps to Editor in Col 2)
-        right_log = ctk.CTkFrame(parent, fg_color=COLORS["panel"], corner_radius=12)
-        right_log.grid(row=1, column=2, sticky="nsew", padx=(4, 0), pady=(0, 0))
-        right_log.grid_columnconfigure(0, weight=1)
-        right_log.grid_rowconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            right_log, text="📝  Translation Log",
-            font=(FONT_FAMILY, 12, "bold"), text_color=COLORS["text_primary"],
-        ).grid(row=0, column=0, padx=12, pady=(8, 4), sticky="w")
-
-        self.translation_log_console = ctk.CTkTextbox(
-            right_log, font=("Consolas", 10),
-            fg_color=COLORS["bg_dark"], text_color=COLORS["text_muted"],
-            corner_radius=8, border_width=1, border_color=COLORS["border"],
-        )
-        self.translation_log_console.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
-        self.translation_log_console.configure(state="disabled")
 
     # ─── Bottom Bar (Unified Processing) ──────────────────────────────────
 
@@ -1298,7 +1311,6 @@ class App(ctk.CTk):
         self.cancel_btn.configure(state="normal")
         self.progress_bar.set(0)
         self._log_clear()
-        self._translation_log_clear()
         self._clear_translation_editor()
 
         threading.Thread(target=self._processing_loop, daemon=True).start()
@@ -1312,7 +1324,6 @@ class App(ctk.CTk):
         """User approved the translations — signal pipeline to continue."""
         self.continue_event.set()
         self.after(0, lambda: self.continue_btn.pack_forget())
-        self._translation_log("User approved translations. Continuing pipeline...")
         self._update_status("Resuming inpainting...")
 
     def _save_current_page_edits(self):
@@ -1510,13 +1521,35 @@ class App(ctk.CTk):
         """
         self.continue_event.clear()
 
-        # Fill the editor on the main thread
+        # Fill the editor and preview on the main thread
         self.after(0, lambda s=srt_source, t=srt_translated: self._load_translation_data(s, t))
-        self.after(0, self._show_continue_button)
+        
+        # Initialize preview
+        if self.pipeline_context.get('segments'):
+            first_seg = self.pipeline_context['segments'][0]
+            # Initialize preview_box from first segment's bbox
+            if first_seg.get('boxes'):
+                box = first_seg['boxes'][0]
+                vw, vh = self.pipeline_context['video_width'], self.pipeline_context['video_height']
+                self.preview_box = [
+                    min(p[0] for p in box) / vw,
+                    min(p[1] for p in box) / vh,
+                    max(p[0] for p in box) / vw,
+                    max(p[1] for p in box) / vh
+                ]
+            
+            self.after(100, lambda: self._render_preview_frame(first_seg.get('start_frame', 0)))
+        elif self.translation_data:
+            # Fallback for modes without bounding box segments (like Audio Only)
+            self.preview_box = [0.1, 0.7, 0.9, 0.9] # Default box
+            time_str = self.translation_data[0].get("timestamp_start", "")
+            frame_idx = self._time_to_frame(time_str)
+            self.after(100, lambda: self._render_preview_frame(frame_idx))
+
+        self.after(200, self._show_continue_button)
 
         self._update_status("⏸ Waiting for translation review...")
         self._log("   ⏸ Translation Editor loaded — review and edit, then click '▶ Continue Inpainting'")
-        self._translation_log("Pipeline paused. Edit translations, then click Continue.")
 
         # Block this thread until user clicks Continue or cancels
         while not self.continue_event.is_set() and not self.cancel_event.is_set():
@@ -1537,7 +1570,6 @@ class App(ctk.CTk):
         done_event.wait(timeout=10)
 
         edited_srt = result_holder[0] or srt_translated
-        self._translation_log(f"Editor data collected: {len(self.translation_data)} entries")
         return edited_srt
 
     def _run_v4_split(self, video_path, target_code, translator_model,
@@ -1547,8 +1579,20 @@ class App(ctk.CTk):
         self._log("   Phase 1: OCR Detection + Translation")
         pipe = SelectiveInpaintPipe()
         ocr_history, fps = pipe.extract_metadata(video_path, progress_cb, cancel_event=self.cancel_event)
+        
+        cap = cv2.VideoCapture(video_path)
+        vw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        vh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
 
         segments = get_stabilized_segments(ocr_history, fps)
+        
+        self.pipeline_context.update({
+            'video_path': video_path,
+            'segments': segments,
+            'video_width': vw,
+            'video_height': vh
+        })
         self._log(f"   OCR detected text on {len(ocr_history)} frames → {len(segments)} segments")
 
         if not segments or self.cancel_event.is_set():
@@ -1573,12 +1617,28 @@ class App(ctk.CTk):
         if edited_srt is None:  # Cancelled
             return None
 
+        # Compute dynamic styles from preview_box
+        x1, y1, x2, y2 = self.preview_box
+        
+        # FFmpeg/libass defaults to a 288-height coordinate space when rendering SRT via force_style.
+        # We must scale our normalized coordinates to 288, NOT the absolute video height.
+        ASS_PLAYRES_Y = 288
+        
+        margin_v = int((1.0 - y2) * ASS_PLAYRES_Y)
+        if margin_v < 0: margin_v = 15
+        
+        box_h_ass = (y2 - y1) * ASS_PLAYRES_Y
+        font_size = int(box_h_ass * 0.75)
+        if font_size < 12: font_size = 22
+        
+        style_override = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV={margin_v}"
+
         # Phase 2: Inpainting + Rendering with edited subtitles
         self._log("   Phase 2: AI Inpainting + Subtitle Rendering")
         result = pipe.inpaint_and_render(
             video_path, segments, edited_srt,
             progress_callback=progress_cb, output_dir=output_dir,
-            cancel_event=self.cancel_event
+            cancel_event=self.cancel_event, style_override=style_override
         )
         return result
 
@@ -1587,6 +1647,19 @@ class App(ctk.CTk):
         """Audio pipeline split into: Whisper+Translate → User Review → Render."""
         # Phase 1a: Extract audio
         self._log("   Phase 1: Audio Extraction + Transcription")
+        
+        cap = cv2.VideoCapture(video_path)
+        vw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        vh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        
+        self.pipeline_context.update({
+            'video_path': video_path,
+            'video_width': vw,
+            'video_height': vh,
+            'segments': [] # Empty until transcribe
+        })
+
         audio_path = extract_audio(video_path, progress_cb)
         if not audio_path:
             self._log("   ❌ Audio extraction failed")
@@ -1619,9 +1692,28 @@ class App(ctk.CTk):
         if edited_srt is None:
             return None
 
+        # Compute dynamic styles from preview_box
+        x1, y1, x2, y2 = self.preview_box
+        
+        # FFmpeg/libass defaults to a 288-height coordinate space when rendering SRT via force_style.
+        ASS_PLAYRES_Y = 288
+        
+        margin_v = int((1.0 - y2) * ASS_PLAYRES_Y)
+        if margin_v < 0: margin_v = 15
+        
+        box_h_ass = (y2 - y1) * ASS_PLAYRES_Y
+        font_size = int(box_h_ass * 0.75)
+        if font_size < 12: font_size = 22
+        
+        style_override = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV={margin_v}"
+
         # Phase 2: Render subtitles onto video
-        self._log("   Phase 2: Rendering subtitles onto video")
-        result = render_subtitles(video_path, edited_srt, progress_cb, output_dir=output_dir)
+        self._log("   Phase 2: Rendering subtitles onto video (Audio Mode)")
+        result = render_subtitles(
+            video_path, edited_srt, progress_cb, 
+            output_dir=output_dir, cancel_event=self.cancel_event,
+            style_override=style_override
+        )
         return result
 
     def _run_replace_subs_split(self, video_path, target_code, translator_model,
@@ -1634,6 +1726,18 @@ class App(ctk.CTk):
         ocr_history, fps = pipe.extract_metadata(video_path, progress_cb)
 
         segments = get_stabilized_segments(ocr_history, fps)
+        
+        cap = cv2.VideoCapture(video_path)
+        vw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        vh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+
+        self.pipeline_context.update({
+            'video_path': video_path,
+            'segments': segments,
+            'video_width': vw,
+            'video_height': vh
+        })
         self._log(f"   OCR detected {len(segments)} subtitle segments")
 
         if not segments:
@@ -1696,7 +1800,7 @@ class App(ctk.CTk):
 
         # Phase 2: Render new subs onto clean video
         self._log("   Phase 2: Rendering new subtitles onto clean video")
-        result = render_subtitles(clean_video, edited_srt, progress_cb, output_dir=output_dir)
+        result = render_subtitles(clean_video, edited_srt, progress_cb, output_dir=output_dir, cancel_event=self.cancel_event)
 
         # Clean up intermediate video
         if result and os.path.exists(result) and result != clean_video:
@@ -1788,24 +1892,245 @@ class App(ctk.CTk):
             self.log_console.configure(state="disabled")
         self.after(0, _clear)
 
-    def _translation_log(self, msg):
-        """Log to the translation (right) log panel."""
-        import datetime
-        timestamp = datetime.datetime.now().strftime("[%H:%M:%S]")
-        def _append():
-            self.translation_log_console.configure(state="normal")
-            self.translation_log_console.insert("end", f"{timestamp} {msg}\n")
-            self.translation_log_console.see("end")
-            self.translation_log_console.configure(state="disabled")
-        self.after(0, _append)
 
-    def _translation_log_clear(self):
-        def _clear():
-            self.translation_log_console.configure(state="normal")
-            self.translation_log_console.delete("1.0", "end")
-            self.translation_log_console.configure(state="disabled")
-        self.after(0, _clear)
 
+    # ─── Preview Panel Logic ──────────────────────────────────────────────
+
+    def _time_to_frame(self, time_str):
+        """Convert an SRT timestamp to a video frame index."""
+        if not time_str: return 0
+        try:
+            time_str = time_str.replace('.', ',')
+            h, m, s_ms = time_str.split(":")
+            if "," in s_ms:
+                s, ms = s_ms.split(",")
+            else:
+                s, ms = s_ms, 0
+            total_sec = int(h)*3600 + int(m)*60 + int(s) + int(ms)/1000.0
+            
+            fps = 30 # Fallback
+            if getattr(self, 'preview_cap', None):
+                fps = self.preview_cap.get(cv2.CAP_PROP_FPS) or 30
+            elif self.pipeline_context.get('video_path'):
+                cap = cv2.VideoCapture(self.pipeline_context['video_path'])
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30
+                cap.release()
+                
+            return int(total_sec * fps)
+        except Exception as e:
+            self._log(f"   [Debug] _time_to_frame error on '{time_str}': {e}")
+            return 0
+
+    def _on_row_click(self, index):
+        """Update preview to show the frame for the clicked segment."""
+        frame_idx = 0
+        if self.pipeline_context.get('segments'):
+            segments = self.pipeline_context['segments']
+            if index < len(segments):
+                seg = segments[index]
+                frame_idx = seg.get('start_frame', 0)
+        elif self.translation_data and index < len(self.translation_data):
+            # Audio-only mode fallback
+            time_str = self.translation_data[index].get("timestamp_start", "")
+            frame_idx = self._time_to_frame(time_str)
+
+        self.after(0, lambda f=frame_idx: self._render_preview_frame(f))
+
+    def _extract_preview_frame(self, video_path, frame_idx):
+        """Extract a single frame from the video using CV2."""
+        try:
+            if not getattr(self, 'preview_cap', None) or self.pipeline_context.get('last_video') != video_path:
+                if getattr(self, 'preview_cap', None): self.preview_cap.release()
+                self.preview_cap = cv2.VideoCapture(video_path)
+                self.pipeline_context['last_video'] = video_path
+            
+            self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = self.preview_cap.read()
+            
+            if not ret:
+                self._log(f"   [Debug] OpenCV failed to read frame {frame_idx}. Trying fallback...")
+                # Re-initialize the capture to reset its state
+                self.preview_cap.release()
+                self.preview_cap = cv2.VideoCapture(video_path)
+                ret, frame = self.preview_cap.read() # Read frame 0
+            
+            if ret:
+                # Convert BGR (OpenCV) to RGB (PIL)
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                return Image.fromarray(frame_rgb)
+            else:
+                self._log(f"   [Debug] OpenCV failed fallback read from {video_path}")
+                return None
+        except Exception as e:
+            self._log(f"   [Debug] Exception in _extract_preview_frame: {e}")
+            return None
+
+    def _render_preview_frame(self, frame_idx):
+        """Render a video frame onto the canvas and draw the resizable box."""
+        self._log(f"   [Debug] _render_preview_frame called for frame {frame_idx}")
+        
+        if not self.pipeline_context.get('video_path'):
+            self._log("   [Debug] No video_path in pipeline_context")
+            return
+            
+        if not self.preview_canvas.winfo_exists():
+            self._log("   [Debug] preview_canvas does not exist")
+            return
+
+        # Ensure UI dimensions are accurate
+        self.preview_canvas.update_idletasks()
+
+        img = self._extract_preview_frame(self.pipeline_context['video_path'], frame_idx)
+        if not img:
+            self._log(f"   [Debug] No image returned for frame {frame_idx}.")
+            return
+        
+        self.preview_frame_data = img
+
+        # Scale image to fit canvas while maintaining aspect ratio
+        canvas_w = self.preview_canvas.winfo_width()
+        canvas_h = self.preview_canvas.winfo_height()
+        
+        self._log(f"   [Debug] pre-fallback Canvas dimensions: {canvas_w}x{canvas_h}")
+        
+        if canvas_w < 10: canvas_w = 400 # Fallback
+        if canvas_h < 10: canvas_h = 320
+
+        img_w, img_h = img.size
+        scale = min(canvas_w / img_w, canvas_h / img_h)
+        new_w, new_h = int(img_w * scale), int(img_h * scale)
+        
+        self._log(f"   [Debug] Scaling image from {img_w}x{img_h} to {new_w}x{new_h}. Target center: {canvas_w//2},{canvas_h//2}")
+        
+        # Center the image
+        self.preview_img_offset = ((canvas_w - new_w) // 2, (canvas_h - new_h) // 2)
+        self.preview_img_scale = scale
+        
+        resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        self.preview_tk_img = ImageTk.PhotoImage(resized)
+
+        self.preview_canvas.delete("all")
+        img_id = self.preview_canvas.create_image(
+            canvas_w // 2, canvas_h // 2, 
+            image=self.preview_tk_img, anchor="center", tags="preview_image"
+        )
+        self._log(f"   [Debug] Drawn image on canvas with ID: {img_id}")
+        
+        self._draw_box()
+
+    def _draw_box(self):
+        """Draw the red resizable box on the canvas."""
+        self.preview_canvas.delete("box_elements")
+        
+        canvas_w = self.preview_canvas.winfo_width()
+        canvas_h = self.preview_canvas.winfo_height()
+        off_x, off_y = self.preview_img_offset
+        scale = self.preview_img_scale
+        
+        # Map normalized self.preview_box to canvas coordinates
+        x1, y1, x2, y2 = self.preview_box
+        # Clip coordinates to [0, 1]
+        x1, x2 = sorted([max(0, min(1, x1)), max(0, min(1, x2))])
+        y1, y2 = sorted([max(0, min(1, y1)), max(0, min(1, y2))])
+        
+        vx1 = off_x + (x1 * (canvas_w - 2 * off_x))
+        vy1 = off_y + (y1 * (canvas_h - 2 * off_y))
+        vx2 = off_x + (x2 * (canvas_w - 2 * off_x))
+        vy2 = off_y + (y2 * (canvas_h - 2 * off_y))
+        
+        # Main rectangle
+        self.preview_rect_id = self.preview_canvas.create_rectangle(
+            vx1, vy1, vx2, vy2, outline="#EF4444", width=3, dash=(4, 4), tags="box_elements"
+        )
+        # Bounding fill (stippled for transparency)
+        self.preview_canvas.create_rectangle(
+            vx1, vy1, vx2, vy2, fill="#EF4444", stipple="gray25" if sys.platform=="win32" else "", 
+            outline="", tags="box_elements"
+        )
+
+        # Handles
+        h_size = 6
+        handles = [
+            (vx1, vy1, 'nw'), (vx2, vy1, 'ne'), (vx1, vy2, 'sw'), (vx2, vy2, 'se'),
+            ((vx1+vx2)/2, vy1, 'n'), ((vx1+vx2)/2, vy2, 's'), 
+            (vx1, (vy1+vy2)/2, 'w'), (vx2, (vy1+vy2)/2, 'e')
+        ]
+        for hx, hy, tag in handles:
+            self.preview_canvas.create_oval(
+                hx-h_size, hy-h_size, hx+h_size, hy+h_size, 
+                fill=COLORS["accent"], outline="white", tags=("box_elements", tag)
+            )
+
+    def _on_canvas_hover(self, event):
+        """Change cursor when hovering over handles."""
+        tags = self.preview_canvas.gettags(self.preview_canvas.find_closest(event.x, event.y))
+        if any(t in ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'] for t in tags):
+            self.preview_canvas.config(cursor="hand2")
+        else:
+            self.preview_canvas.config(cursor="")
+
+    def _on_canvas_click(self, event):
+        """Start resizing logic."""
+        item = self.preview_canvas.find_closest(event.x, event.y)
+        tags = self.preview_canvas.gettags(item)
+        for t in ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w']:
+            if t in tags:
+                self.active_handle = t
+                self.is_resizing = True
+                return
+        self.active_handle = None
+        self.is_resizing = False
+
+    def _on_canvas_drag(self, event):
+        """Resizing the box."""
+        if not self.is_resizing or not self.active_handle:
+            return
+        
+        canvas_w = self.preview_canvas.winfo_width()
+        canvas_h = self.preview_canvas.winfo_height()
+        off_x, off_y = self.preview_img_offset
+        
+        # Convert pixel to normalized
+        nx = (event.x - off_x) / (canvas_w - 2 * off_x)
+        ny = (event.y - off_y) / (canvas_h - 2 * off_y)
+        nx = max(0, min(1, nx))
+        ny = max(0, min(1, ny))
+
+        if 'n' in self.active_handle: self.preview_box[1] = ny
+        if 's' in self.active_handle: self.preview_box[3] = ny
+        if 'w' in self.active_handle: self.preview_box[0] = nx
+        if 'e' in self.active_handle: self.preview_box[2] = nx
+        
+        # Ensure x1 < x2, y1 < y2
+        if self.preview_box[0] > self.preview_box[2]: self.preview_box[0], self.preview_box[2] = self.preview_box[2], self.preview_box[0]
+        if self.preview_box[1] > self.preview_box[3]: self.preview_box[1], self.preview_box[3] = self.preview_box[3], self.preview_box[1]
+
+        self._draw_box()
+
+    def _on_canvas_release(self, event):
+        """Finalize box coordinates."""
+        self.is_resizing = False
+        self.active_handle = None
+        # Apply adjustment to ALL segments (Default behavior as requested)
+        self._apply_preview_box_to_segments()
+
+    def _apply_preview_box_to_segments(self):
+        """Translate the normalized preview_box into video coordinates for all segments."""
+        if not self.pipeline_context.get('segments') or not self.preview_frame_data:
+            return
+        
+        # Video resolution
+        vw, vh = self.pipeline_context['video_width'], self.pipeline_context['video_height']
+        x1, y1, x2, y2 = self.preview_box
+        
+        # Absolute pixels
+        ax1, ay1, ax2, ay2 = x1*vw, y1*vh, x2*vw, y2*vh
+        new_box = [[ax1, ay1], [ax2, ay1], [ax2, ay2], [ax1, ay2]]
+        
+        for seg in self.pipeline_context['segments']:
+            seg['boxes'] = [new_box] # Override with the global human-adjusted box
+
+    # ─── (Existing main block) ───
 
 if __name__ == "__main__":
     app = App()
