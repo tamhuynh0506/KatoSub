@@ -1025,7 +1025,7 @@ class App(ctk.CTk):
         self.pipeline_mode_var = ctk.StringVar(value="Hardcoded Subs (OCR)")
         ctk.CTkOptionMenu(
             type_frame, variable=self.pipeline_mode_var,
-            values=["Hardcoded Subs (OCR)", "Audio Only (Whisper)", "Replace Subs (Full)", "Watermark Removal"],
+            values=["Hardcoded Subs (OCR)", "Audio Only (Whisper)", "Watermark Removal"],
             fg_color=COLORS["bg_dark"], button_color=COLORS["accent"],
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["panel"],
@@ -1140,7 +1140,7 @@ class App(ctk.CTk):
         """Show/hide Whisper model selector based on pipeline mode."""
         self.whisper_frame.grid_remove()
 
-        if value in ["Audio Only (Whisper)", "Replace Subs (Full)"]:
+        if value == "Audio Only (Whisper)":
             self.whisper_frame.grid()
 
     # ─── Log Panels (dual split) ─────────────────────────────────────────
@@ -1408,7 +1408,6 @@ class App(ctk.CTk):
         pipeline_mode = self.pipeline_mode_var.get()
         whisper_model = self.whisper_model_var.get()
         is_audio_mode = (pipeline_mode == "Audio Only (Whisper)")
-        is_replace_mode = (pipeline_mode == "Replace Subs (Full)")
         is_watermark_mode = (pipeline_mode == "Watermark Removal")
 
         # Get encoding settings
@@ -1425,8 +1424,6 @@ class App(ctk.CTk):
             self._log(f"📐  Resolution: {resolution_key} | Quality: {quality_key}")
             if is_watermark_mode:
                 self._log("🚀  Engine: AI Watermark Removal (LaMa Inpainting + NVENC)")
-            elif is_replace_mode:
-                self._log("🚀  Engine: Replace Subs — Inpaint + Whisper (medium)")
             elif is_audio_mode:
                 self._log(f"🚀  Engine: Audio Transcription (Faster-Whisper Turbo {whisper_model})")
             else:
@@ -1461,7 +1458,7 @@ class App(ctk.CTk):
                     )
 
                 # ─────────── V4: Hardcoded Subs (OCR) ─────────────────
-                elif not is_audio_mode and not is_replace_mode:
+                elif not is_audio_mode:
                     result = self._run_v4_split(
                         video_path, target_code, translator_model,
                         progress_cb, output_dir, idx, total_videos
@@ -1472,13 +1469,6 @@ class App(ctk.CTk):
                     result = self._run_audio_split(
                         video_path, target_code, translator_model,
                         whisper_model, progress_cb, output_dir, idx, total_videos
-                    )
-
-                # ─────────── Replace Subs (Full) ──────────────────────
-                elif is_replace_mode:
-                    result = self._run_replace_subs_split(
-                        video_path, target_code, translator_model,
-                        progress_cb, output_dir, idx, total_videos
                     )
 
                 if result:
@@ -1716,100 +1706,6 @@ class App(ctk.CTk):
         )
         return result
 
-    def _run_replace_subs_split(self, video_path, target_code, translator_model,
-                                progress_cb, output_dir, idx, total_videos):
-        """Replace Subs pipeline split into:
-        OCR+Inpaint old → Whisper+Translate → User Review → Render new."""
-        # Phase 1a: OCR detect old subtitles
-        self._log("   Phase 1: Detecting and removing old subtitles")
-        pipe = SelectiveInpaintPipe()
-        ocr_history, fps = pipe.extract_metadata(video_path, progress_cb)
-
-        segments = get_stabilized_segments(ocr_history, fps)
-        
-        cap = cv2.VideoCapture(video_path)
-        vw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        vh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        cap.release()
-
-        self.pipeline_context.update({
-            'video_path': video_path,
-            'segments': segments,
-            'video_width': vw,
-            'video_height': vh
-        })
-        self._log(f"   OCR detected {len(segments)} subtitle segments")
-
-        if not segments:
-            self._log("   ⚠ No old subs found — falling back to audio-only flow")
-            return self._run_audio_split(
-                video_path, target_code, translator_model,
-                "medium", progress_cb, output_dir, idx, total_videos
-            )
-
-        # Phase 1b: Inpaint (remove old subs) — no new subs yet
-        clean_video = pipe.inpaint_and_render(
-            video_path, segments, translated_srt="",
-            progress_callback=progress_cb,
-        )
-
-        # Free GPU memory
-        del pipe
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-        except Exception:
-            pass
-
-        if not clean_video or not os.path.exists(clean_video):
-            self._log("   ❌ Inpainting failed")
-            return None
-
-        # Phase 1c: Extract audio + Whisper transcribe
-        self._log("   Extracting audio and transcribing...")
-        audio_path = extract_audio(video_path, progress_cb)
-        if not audio_path:
-            self._log("   ❌ Audio extraction failed")
-            return clean_video
-
-        srt_content, detected_lang = transcribe_audio(audio_path, "medium", progress_cb)
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
-
-        if not srt_content or not srt_content.strip():
-            self._log("   ⚠ No speech detected — returning clean video")
-            return clean_video
-
-        # Phase 1d: Translate
-        self._log(f"   Translating to {target_code}...")
-        translator = AITranslator(model=translator_model)
-        translated_srt = translator.translate_srt_content(
-            srt_content, target_code, progress_callback=progress_cb
-        )
-        translator.unload()
-
-        if not translated_srt or not translated_srt.strip():
-            translated_srt = srt_content
-
-        # ── PAUSE: User review in Translation Editor ──
-        edited_srt = self._wait_for_user_review(srt_content, translated_srt)
-        if edited_srt is None:
-            return clean_video
-
-        # Phase 2: Render new subs onto clean video
-        self._log("   Phase 2: Rendering new subtitles onto clean video")
-        result = render_subtitles(clean_video, edited_srt, progress_cb, output_dir=output_dir, cancel_event=self.cancel_event)
-
-        # Clean up intermediate video
-        if result and os.path.exists(result) and result != clean_video:
-            try:
-                os.remove(clean_video)
-            except OSError:
-                pass
-
-        return result
 
     def _update_queue_status(self, index, status):
         """Update a specific file's status badge in the queue."""
