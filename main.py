@@ -499,8 +499,9 @@ class App(ctk.CTk):
         panel = ctk.CTkFrame(parent, fg_color=COLORS["panel"], corner_radius=12)
         panel.grid(row=0, column=2, rowspan=2, sticky="nsew", pady=(0, 0))
         panel.grid_columnconfigure(0, weight=1)
-        panel.grid_rowconfigure(1, weight=0) # Preview
-        panel.grid_rowconfigure(2, weight=1) # Editor
+        panel.grid_rowconfigure(0, weight=0) # Header
+        panel.grid_rowconfigure(1, weight=0, minsize=320) # Preview - Fixed height
+        panel.grid_rowconfigure(2, weight=1) # Editor - Stretches
 
         # Header bar
         header = ctk.CTkFrame(panel, fg_color=COLORS["panel_header"], corner_radius=8)
@@ -1529,12 +1530,16 @@ class App(ctk.CTk):
                 ]
             
             self.after(100, lambda: self._render_preview_frame(first_seg.get('start_frame', 0)))
-        elif self.translation_data:
+        elif srt_translated:
             # Fallback for modes without bounding box segments (like Audio Only)
             self.preview_box = [0.1, 0.7, 0.9, 0.9] # Default box
-            time_str = self.translation_data[0].get("timestamp_start", "")
-            frame_idx = self._time_to_frame(time_str)
-            self.after(100, lambda: self._render_preview_frame(frame_idx))
+            
+            # Extract first timestamp from srt_translated directly to avoid race condition
+            first_blocks = self._parse_srt(srt_translated)
+            if first_blocks:
+                time_str = first_blocks[0].get("time_start", "")
+                frame_idx = self._time_to_frame(time_str)
+                self.after(100, lambda: self._render_preview_frame(frame_idx))
 
         self.after(200, self._show_continue_button)
 
@@ -1607,21 +1612,30 @@ class App(ctk.CTk):
         if edited_srt is None:  # Cancelled
             return None
 
-        # Compute dynamic styles from preview_box
-        x1, y1, x2, y2 = self.preview_box
+        # Compute dynamic styles from preview_box (scaled to aspect ratio)
+        vw = self.pipeline_context.get('video_width', 1920)
+        vh = self.pipeline_context.get('video_height', 1080)
+        aspect_ratio = vw / vh if vh > 0 else 1.0
         
         # FFmpeg/libass defaults to a 288-height coordinate space when rendering SRT via force_style.
-        # We must scale our normalized coordinates to 288, NOT the absolute video height.
         ASS_PLAYRES_Y = 288
+        ASS_PLAYRES_X = int(ASS_PLAYRES_Y * aspect_ratio)
         
+        x1, y1, x2, y2 = self.preview_box
         margin_v = int((1.0 - y2) * ASS_PLAYRES_Y)
+        margin_l = int(x1 * ASS_PLAYRES_X)
+        margin_r = int((1.0 - x2) * ASS_PLAYRES_X)
+        
         if margin_v < 0: margin_v = 15
+        if margin_l < 0: margin_l = 0
+        if margin_r < 0: margin_r = 0
         
         box_h_ass = (y2 - y1) * ASS_PLAYRES_Y
-        font_size = int(box_h_ass * 0.75)
-        if font_size < 12: font_size = 22
+        font_size = int(box_h_ass * 0.60) # 0.60 allows for better padding / multi-line room
+        if font_size < 8: font_size = 8
+        if font_size > 36: font_size = 36 # Limit max size for professional look
         
-        style_override = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV={margin_v}"
+        style_override = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV={margin_v},MarginL={margin_l},MarginR={margin_r}"
 
         # Phase 2: Inpainting + Rendering with edited subtitles
         self._log("   Phase 2: AI Inpainting + Subtitle Rendering")
@@ -1682,20 +1696,30 @@ class App(ctk.CTk):
         if edited_srt is None:
             return None
 
-        # Compute dynamic styles from preview_box
-        x1, y1, x2, y2 = self.preview_box
+        # Compute dynamic styles from preview_box (scaled to aspect ratio)
+        vw = self.pipeline_context.get('video_width', 1920)
+        vh = self.pipeline_context.get('video_height', 1080)
+        aspect_ratio = vw / vh if vh > 0 else 1.0
         
         # FFmpeg/libass defaults to a 288-height coordinate space when rendering SRT via force_style.
         ASS_PLAYRES_Y = 288
+        ASS_PLAYRES_X = int(ASS_PLAYRES_Y * aspect_ratio)
         
+        x1, y1, x2, y2 = self.preview_box
         margin_v = int((1.0 - y2) * ASS_PLAYRES_Y)
+        margin_l = int(x1 * ASS_PLAYRES_X)
+        margin_r = int((1.0 - x2) * ASS_PLAYRES_X)
+        
         if margin_v < 0: margin_v = 15
+        if margin_l < 0: margin_l = 0
+        if margin_r < 0: margin_r = 0
         
         box_h_ass = (y2 - y1) * ASS_PLAYRES_Y
-        font_size = int(box_h_ass * 0.75)
-        if font_size < 12: font_size = 22
+        font_size = int(box_h_ass * 0.60) # 0.60 allows for better padding / multi-line room
+        if font_size < 8: font_size = 8
+        if font_size > 36: font_size = 36 # Limit max size for professional look
         
-        style_override = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV={margin_v}"
+        style_override = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV={margin_v},MarginL={margin_l},MarginR={margin_r}"
 
         # Phase 2: Render subtitles onto video
         self._log("   Phase 2: Rendering subtitles onto video (Audio Mode)")
@@ -1887,9 +1911,11 @@ class App(ctk.CTk):
         canvas_w = self.preview_canvas.winfo_width()
         canvas_h = self.preview_canvas.winfo_height()
         
-        self._log(f"   [Debug] pre-fallback Canvas dimensions: {canvas_w}x{canvas_h}")
+        self._log(f"   [Debug] Preview Canvas dimensions: {canvas_w}x{canvas_h}")
         
-        if canvas_w < 10: canvas_w = 400 # Fallback
+        if canvas_w < 10: 
+            self._log("   [Debug] Canvas too small, using fallback 400x320")
+            canvas_w = 400 # Fallback
         if canvas_h < 10: canvas_h = 320
 
         img_w, img_h = img.size
