@@ -595,32 +595,32 @@ class App(ctk.CTk):
         # Column headers for source / translated
         col_header = ctk.CTkFrame(editor_container, fg_color=COLORS["panel_header"], corner_radius=6, height=30)
         col_header.grid(row=0, column=0, sticky="new", padx=8, pady=(2, 0))
-        col_header.grid_columnconfigure(0, weight=0, minsize=70)
-        col_header.grid_columnconfigure(1, weight=1)
-        col_header.grid_columnconfigure(2, weight=0, minsize=70)
-        col_header.grid_columnconfigure(3, weight=1)
+        col_header.grid_columnconfigure(0, weight=0, minsize=40)  # Index
+        col_header.grid_columnconfigure(1, weight=0, minsize=100) # Time
+        col_header.grid_columnconfigure(2, weight=1)             # Source Text
+        col_header.grid_columnconfigure(3, weight=2)             # Translated Text (Largest)
         col_header.grid_columnconfigure(4, weight=0, minsize=16) # Scrollbar offset
         col_header.grid_propagate(False)
 
         ctk.CTkLabel(
-            col_header, text="Time", font=(FONT_FAMILY, 10, "bold"),
-            text_color=COLORS["text_muted"],
-        ).grid(row=0, column=0, padx=(28, 4), pady=4, sticky="w")
+            col_header, text="#", font=(FONT_FAMILY, 10, "bold"),
+            text_color=COLORS["text_muted"], width=40
+        ).grid(row=0, column=0, padx=(4, 0), pady=4, sticky="w")
+
+        ctk.CTkLabel(
+            col_header, text="Timestamp", font=(FONT_FAMILY, 10, "bold"),
+            text_color=COLORS["text_muted"], width=100
+        ).grid(row=0, column=1, padx=(10, 0), pady=4, sticky="w")
 
         ctk.CTkLabel(
             col_header, text="Source Text", font=(FONT_FAMILY, 10, "bold"),
             text_color=COLORS["text_muted"],
-        ).grid(row=0, column=1, padx=(38, 4), pady=4, sticky="w")
-
-        ctk.CTkLabel(
-            col_header, text="Time", font=(FONT_FAMILY, 10, "bold"),
-            text_color=COLORS["text_muted"],
-        ).grid(row=0, column=2, padx=(36, 4), pady=4, sticky="w")
+        ).grid(row=0, column=2, padx=(10, 4), pady=4, sticky="w")
 
         ctk.CTkLabel(
             col_header, text="Translated Text", font=(FONT_FAMILY, 10, "bold"),
-            text_color=COLORS["text_muted"],
-        ).grid(row=0, column=4, padx=(36, 12), pady=4, sticky="w")
+            text_color=COLORS["text_primary"], # Highlighted
+        ).grid(row=0, column=3, padx=(10, 12), pady=4, sticky="w")
 
         # Scrollable editor rows
         self.editor_scroll = ctk.CTkScrollableFrame(
@@ -629,11 +629,10 @@ class App(ctk.CTk):
             scrollbar_button_hover_color=COLORS["accent"],
         )
         self.editor_scroll.grid(row=1, column=0, sticky="nsew", padx=8, pady=(32, 8))
-        self.editor_scroll.grid_columnconfigure(0, weight=0, minsize=70)
-        self.editor_scroll.grid_columnconfigure(1, weight=0, minsize=80)
-        self.editor_scroll.grid_columnconfigure(2, weight=1)
-        self.editor_scroll.grid_columnconfigure(3, weight=0, minsize=70)
-        self.editor_scroll.grid_columnconfigure(4, weight=1)
+        self.editor_scroll.grid_columnconfigure(0, weight=0, minsize=40)  # Index
+        self.editor_scroll.grid_columnconfigure(1, weight=0, minsize=100) # Time
+        self.editor_scroll.grid_columnconfigure(2, weight=1)             # Source
+        self.editor_scroll.grid_columnconfigure(3, weight=2)             # Translated
         editor_container.grid_rowconfigure(1, weight=1)
 
         # Show placeholder
@@ -752,43 +751,48 @@ class App(ctk.CTk):
             grid_row = i - start_idx
             row_bg = COLORS["bg_dark"] if i % 2 == 0 else COLORS["panel"]
 
-            # Source timestamp
+            # 0. Index
+            ctk.CTkLabel(
+                self.editor_scroll, text=str(i + 1),
+                font=(FONT_FAMILY, 10, "bold"), text_color=COLORS["text_muted"],
+                width=40,
+            ).grid(row=grid_row, column=0, padx=(4, 0), pady=4, sticky="w")
+
+            # 1. Timestamp (Consolas for alignment)
             ctk.CTkLabel(
                 self.editor_scroll, text=entry["timestamp_start"],
-                font=("Consolas", 10), text_color=COLORS["text_muted"],
-                width=70,
-            ).grid(row=grid_row, column=0, padx=(12, 4), pady=2, sticky="w")
+                font=("Consolas", 10), text_color=COLORS["text_secondary"],
+                width=100,
+            ).grid(row=grid_row, column=1, padx=(10, 0), pady=4, sticky="w")
 
-            # Source text (read-only)
+            # 2. Source text (Read-only, subtle border)
             src_entry = ctk.CTkEntry(
                 self.editor_scroll, font=(FONT_FAMILY, 11),
                 fg_color=row_bg, text_color=COLORS["text_secondary"],
-                border_width=0, state="disabled",
+                border_width=1, border_color=COLORS["card_hover"],
             )
-            src_entry.grid(row=grid_row, column=1, padx=(4, 4), pady=2, sticky="ew")
-            src_entry.configure(state="normal")
+            src_entry.grid(row=grid_row, column=2, padx=(10, 4), pady=4, sticky="ew")
             src_entry.insert(0, entry["source"])
             src_entry.configure(state="disabled")
 
-            # Translated timestamp
-            ctk.CTkLabel(
-                self.editor_scroll, text=entry["timestamp_start"],
-                font=("Consolas", 10), text_color=COLORS["text_muted"],
-                width=70,
-            ).grid(row=grid_row, column=2, padx=(4, 4), pady=2, sticky="w")
-
-            # Translated text (editable)
+            # 3. Translated text (Editable, accent border)
             trans_entry = ctk.CTkEntry(
-                self.editor_scroll, font=(FONT_FAMILY, 11),
+                self.editor_scroll, font=(FONT_FAMILY, 11, "bold"),
                 fg_color=row_bg, text_color=COLORS["text_primary"],
                 border_width=1, border_color=COLORS["border"],
             )
-            trans_entry.grid(row=grid_row, column=3, padx=(4, 12), pady=2, sticky="ew")
+            trans_entry.grid(row=grid_row, column=3, padx=(10, 12), pady=4, sticky="ew")
             trans_entry.insert(0, entry["translated"])
 
-            # Bind edit tracking and preview jumping
+            # Highlight border on focus
+            trans_entry.bind("<FocusIn>", lambda e: e.widget.configure(border_color=COLORS["accent"]))
+            trans_entry.bind("<FocusOut>", lambda e, _i=i: [
+                e.widget.configure(border_color=COLORS["border"]),
+                self._on_translation_edit(_i, e.widget.get())
+            ])
+
+            # Bind row selection for preview jumping
             idx = i
-            trans_entry.bind("<FocusOut>", lambda e, _i=idx: self._on_translation_edit(_i, e.widget.get()))
             trans_entry.bind("<Button-1>", lambda e, _i=idx: self._on_row_click(_i))
             src_entry.bind("<Button-1>", lambda e, _i=idx: self._on_row_click(_i))
 
