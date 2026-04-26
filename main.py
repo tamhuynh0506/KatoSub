@@ -272,6 +272,7 @@ class App(ctk.CTk):
         self.active_handle = None # 'nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'
         self.is_resizing = False
         self.current_preview_index = None # Tracking which subtitle index we are viewing
+        self.manual_inpaint_var = ctk.BooleanVar(value=False)
 
         # ── Layout: header + content + bottom bar ──
         self.grid_columnconfigure(0, weight=1)
@@ -555,14 +556,6 @@ class App(ctk.CTk):
             fg_color=COLORS["card_hover"], hover_color=COLORS["border"],
             font=(FONT_FAMILY, 14), command=self._next_page,
         ).pack(side="left", padx=2)
-
-        self.manual_inpaint_var = ctk.BooleanVar(value=False)
-        self.manual_inpaint_checkbox = ctk.CTkCheckBox(
-            toolbar, text="Manual Inpaint Region", variable=self.manual_inpaint_var,
-            font=(FONT_FAMILY, 11), fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
-            width=20, command=self._draw_box
-        )
-        self.manual_inpaint_checkbox.pack(side="left", padx=(12, 12))
 
         # Continue Inpainting button — shown after OCR+Translation completes
         self.continue_btn = ctk.CTkButton(
@@ -1148,6 +1141,17 @@ class App(ctk.CTk):
             font=(FONT_FAMILY, 11),
         )
         self.whisper_menu.grid(row=1, column=0, sticky="ew", padx=4)
+
+        # Row 4: Manual Inpaint Toggle
+        manual_frame = ctk.CTkFrame(settings_container, fg_color="transparent")
+        manual_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(4, 8), padx=4)
+        
+        self.manual_inpaint_checkbox = ctk.CTkCheckBox(
+            manual_frame, text="Manual Inpaint (Pause for Review)", variable=self.manual_inpaint_var,
+            font=(FONT_FAMILY, 11, "bold"), fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            command=self._draw_box
+        )
+        self.manual_inpaint_checkbox.pack(side="left", padx=4)
         self.whisper_frame.grid_remove() # hide by default
 
     def _on_pipeline_mode_change(self, value):
@@ -1323,6 +1327,7 @@ class App(ctk.CTk):
         self.cancel_event.clear()
         self.start_btn.configure(state="disabled")
         self.cancel_btn.configure(state="normal")
+        self.manual_inpaint_checkbox.configure(state="disabled")
         self.progress_bar.set(0)
         self._log_clear()
         self._clear_translation_editor()
@@ -1514,6 +1519,7 @@ class App(ctk.CTk):
             self.is_processing = False
             self.after(0, lambda: self.start_btn.configure(state="normal"))
             self.after(0, lambda: self.cancel_btn.configure(state="disabled"))
+            self.after(0, lambda: self.manual_inpaint_checkbox.configure(state="normal"))
             self.after(0, self._hide_continue_button)
 
     # ─── Split-Phase Pipeline Methods ─────────────────────────────────────
@@ -1525,13 +1531,12 @@ class App(ctk.CTk):
         """
         self.continue_event.clear()
 
-        # Fill the editor and preview on the main thread
+        # Fill the editor and preview on the main thread (Always do this so user sees something)
         self.after(0, lambda s=srt_source, t=srt_translated: self._load_translation_data(s, t))
         
         # Initialize preview
         if self.pipeline_context.get('segments'):
             first_seg = self.pipeline_context['segments'][0]
-            # Initialize preview_box from first segment's bbox
             if first_seg.get('boxes'):
                 box = first_seg['boxes'][0]
                 vw, vh = self.pipeline_context['video_width'], self.pipeline_context['video_height']
@@ -1541,18 +1546,17 @@ class App(ctk.CTk):
                     max(p[0] for p in box) / vw,
                     max(p[1] for p in box) / vh
                 ]
-            
             self.after(100, lambda: self._render_preview_frame(first_seg.get('start_frame', 0)))
         elif srt_translated:
-            # Fallback for modes without bounding box segments (like Audio Only)
-            self.preview_box = [0.1, 0.8, 0.9, 0.95] # Default box
-            
-            # Extract first timestamp from srt_translated directly to avoid race condition
             first_blocks = self._parse_srt(srt_translated)
             if first_blocks:
                 time_str = first_blocks[0].get("time_start", "")
                 frame_idx = self._time_to_frame(time_str)
                 self.after(100, lambda: self._render_preview_frame(frame_idx))
+
+        # Check for auto-continue ONLY after triggering UI population
+        if not self.manual_inpaint_var.get():
+            return srt_translated
 
         self.after(200, self._show_continue_button)
 
@@ -1930,6 +1934,52 @@ class App(ctk.CTk):
         off_x, off_y = getattr(self, 'preview_img_offset', (0,0))
         scale = getattr(self, 'preview_img_scale', 1.0)
         
+        # Map normalized self.preview_box to canvas coordinates
+        x1, y1, x2, y2 = self.preview_box
+        # Clip coordinates to [0, 1]
+        x1, x2 = sorted([max(0, min(1, x1)), max(0, min(1, x2))])
+        y1, y2 = sorted([max(0, min(1, y1)), max(0, min(1, y2))])
+        
+        vx1 = off_x + (x1 * (canvas_w - 2 * off_x))
+        vy1 = off_y + (y1 * (canvas_h - 2 * off_y))
+        vx2 = off_x + (x2 * (canvas_w - 2 * off_x))
+        vy2 = off_y + (y2 * (canvas_h - 2 * off_y))
+        
+        # ─── Draw Subtitle Text Preview (Always Visible) ───
+        current_idx = getattr(self, 'current_preview_index', None)
+        txt = ""
+        if current_idx is not None and current_idx < len(self.translation_data):
+            txt = self.translation_data[current_idx].get("translated", "")
+        else:
+            txt = "This is the subtitle." # Mock text for placement visualization
+
+        if txt:
+            # Map [center_x, y_pos] to canvas coordinates
+            vw, vh = self.pipeline_context.get('video_width', 1920), self.pipeline_context.get('video_height', 1080)
+            box_width = x2 - x1
+            center_x_norm = x1 + (box_width / 2.0)
+            
+            canvas_tx = off_x + (center_x_norm * (canvas_w - 2 * off_x))
+            canvas_ty = off_y + (y2 * (canvas_h - 2 * off_y))
+            
+            # Estimate canvas font size based on scaled video font size
+            v_font_size = int((y2 - y1) * vh * 0.35)
+            v_font_size = max(16, min(v_font_size, int(vh * 0.15)))
+            canvas_font_size = int(v_font_size * scale)
+            if canvas_font_size < 8: canvas_font_size = 8
+            
+            # Draw shadowed text
+            self.preview_canvas.create_text(
+                canvas_tx + 2, canvas_ty + 2, text=txt,
+                fill="black", font=(FONT_FAMILY, canvas_font_size, "bold"),
+                anchor="s", tags="box_elements", justify="center", width=(canvas_w * 0.8)
+            )
+            self.preview_canvas.create_text(
+                canvas_tx, canvas_ty, text=txt,
+                fill="white", font=(FONT_FAMILY, canvas_font_size, "bold"),
+                anchor="s", tags="box_elements", justify="center", width=(canvas_w * 0.8)
+            )
+
         if not getattr(self, 'manual_inpaint_var', None) or not self.manual_inpaint_var.get():
             # View-Only Mode: Overlay AI OCR Detected Bounds
             frame_idx = getattr(self, 'preview_frame_idx', None)
@@ -1948,17 +1998,7 @@ class App(ctk.CTk):
                                 )
             return
             
-        # Map normalized self.preview_box to canvas coordinates
-        x1, y1, x2, y2 = self.preview_box
-        # Clip coordinates to [0, 1]
-        x1, x2 = sorted([max(0, min(1, x1)), max(0, min(1, x2))])
-        y1, y2 = sorted([max(0, min(1, y1)), max(0, min(1, y2))])
-        
-        vx1 = off_x + (x1 * (canvas_w - 2 * off_x))
-        vy1 = off_y + (y1 * (canvas_h - 2 * off_y))
-        vx2 = off_x + (x2 * (canvas_w - 2 * off_x))
-        vy2 = off_y + (y2 * (canvas_h - 2 * off_y))
-        
+        # Draw Resizable Box & Handles (Manual Mode Only)
         # Main rectangle
         self.preview_rect_id = self.preview_canvas.create_rectangle(
             vx1, vy1, vx2, vy2, outline="#EF4444", width=3, dash=(4, 4), tags="box_elements"
@@ -1981,39 +2021,6 @@ class App(ctk.CTk):
                 hx-h_size, hy-h_size, hx+h_size, hy+h_size, 
                 fill=COLORS["accent"], outline="white", tags=("box_elements", tag)
             )
-
-        # ─── Draw Subtitle Text Preview ───
-        if getattr(self, 'current_preview_index', None) is not None:
-            idx = self.current_preview_index
-            if idx < len(self.translation_data):
-                txt = self.translation_data[idx].get("translated", "")
-                if txt:
-                    # Render text on the canvas at the calculated \pos location
-                    # Map [center_x, y_pos] to canvas coordinates
-                    vw, vh = self.pipeline_context.get('video_width', 1920), self.pipeline_context.get('video_height', 1080)
-                    box_width = x2 - x1
-                    center_x_norm = x1 + (box_width / 2.0)
-                    
-                    canvas_tx = off_x + (center_x_norm * (canvas_w - 2 * off_x))
-                    canvas_ty = off_y + (y2 * (canvas_h - 2 * off_y))
-                    
-                    # Estimate canvas font size based on scaled video font size
-                    v_font_size = int((y2 - y1) * vh * 0.35)
-                    v_font_size = max(16, min(v_font_size, int(vh * 0.15)))
-                    canvas_font_size = int(v_font_size * scale)
-                    if canvas_font_size < 8: canvas_font_size = 8
-                    
-                    # Draw shadowed text
-                    self.preview_canvas.create_text(
-                        canvas_tx + 2, canvas_ty + 2, text=txt,
-                        fill="black", font=(FONT_FAMILY, canvas_font_size, "bold"),
-                        anchor="s", tags="box_elements", justify="center", width=(canvas_w * 0.8)
-                    )
-                    self.preview_canvas.create_text(
-                        canvas_tx, canvas_ty, text=txt,
-                        fill="white", font=(FONT_FAMILY, canvas_font_size, "bold"),
-                        anchor="s", tags="box_elements", justify="center", width=(canvas_w * 0.8)
-                    )
 
     def _on_canvas_hover(self, event):
         """Change cursor when hovering over handles."""
