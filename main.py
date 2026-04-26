@@ -268,9 +268,10 @@ class App(ctk.CTk):
         self.preview_frame_data = None # PIL image
         self.preview_canvas_id = None
         self.preview_rect_id = None
-        self.preview_box = [0.1, 0.7, 0.9, 0.9] # Default [x1, y1, x2, y2] normalized
+        self.preview_box = [0.1, 0.8, 0.9, 0.95] # Default [x1, y1, x2, y2] normalized
         self.active_handle = None # 'nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'
         self.is_resizing = False
+        self.current_preview_index = None # Tracking which subtitle index we are viewing
 
         # ── Layout: header + content + bottom bar ──
         self.grid_columnconfigure(0, weight=1)
@@ -554,6 +555,14 @@ class App(ctk.CTk):
             fg_color=COLORS["card_hover"], hover_color=COLORS["border"],
             font=(FONT_FAMILY, 14), command=self._next_page,
         ).pack(side="left", padx=2)
+
+        self.manual_inpaint_var = ctk.BooleanVar(value=False)
+        self.manual_inpaint_checkbox = ctk.CTkCheckBox(
+            toolbar, text="Manual Inpaint Region", variable=self.manual_inpaint_var,
+            font=(FONT_FAMILY, 11), fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            width=20, command=self._draw_box
+        )
+        self.manual_inpaint_checkbox.pack(side="left", padx=(12, 12))
 
         # Continue Inpainting button — shown after OCR+Translation completes
         self.continue_btn = ctk.CTkButton(
@@ -1536,7 +1545,7 @@ class App(ctk.CTk):
             self.after(100, lambda: self._render_preview_frame(first_seg.get('start_frame', 0)))
         elif srt_translated:
             # Fallback for modes without bounding box segments (like Audio Only)
-            self.preview_box = [0.1, 0.7, 0.9, 0.9] # Default box
+            self.preview_box = [0.1, 0.8, 0.9, 0.95] # Default box
             
             # Extract first timestamp from srt_translated directly to avoid race condition
             first_blocks = self._parse_srt(srt_translated)
@@ -1615,6 +1624,10 @@ class App(ctk.CTk):
         edited_srt = self._wait_for_user_review(original_srt, translated_srt)
         if edited_srt is None:  # Cancelled
             return None
+
+        # Custom Inpainting Region Check
+        if getattr(self, 'manual_inpaint_var', None) and self.manual_inpaint_var.get():
+            self._apply_preview_box_to_segments()
 
         # Convert SRT to ASS with pixel-perfect centering from preview_box
         vw = self.pipeline_context.get('video_width', 1920)
@@ -1820,6 +1833,7 @@ class App(ctk.CTk):
             time_str = self.translation_data[index].get("timestamp_start", "")
             frame_idx = self._time_to_frame(time_str)
 
+        self.current_preview_index = index
         self.after(0, lambda f=frame_idx: self._render_preview_frame(f))
 
     def _extract_preview_frame(self, video_path, frame_idx):
@@ -1854,6 +1868,7 @@ class App(ctk.CTk):
     def _render_preview_frame(self, frame_idx):
         """Render a video frame onto the canvas and draw the resizable box."""
         self._log(f"   [Debug] _render_preview_frame called for frame {frame_idx}")
+        self.preview_frame_idx = frame_idx
         
         if not self.pipeline_context.get('video_path'):
             self._log("   [Debug] No video_path in pipeline_context")
@@ -1907,14 +1922,32 @@ class App(ctk.CTk):
         self._draw_box()
 
     def _draw_box(self):
-        """Draw the red resizable box on the canvas."""
+        """Draw the red resizable box on the canvas or auto-inpainted OCR boxes."""
         self.preview_canvas.delete("box_elements")
         
         canvas_w = self.preview_canvas.winfo_width()
         canvas_h = self.preview_canvas.winfo_height()
-        off_x, off_y = self.preview_img_offset
-        scale = self.preview_img_scale
+        off_x, off_y = getattr(self, 'preview_img_offset', (0,0))
+        scale = getattr(self, 'preview_img_scale', 1.0)
         
+        if not getattr(self, 'manual_inpaint_var', None) or not self.manual_inpaint_var.get():
+            # View-Only Mode: Overlay AI OCR Detected Bounds
+            frame_idx = getattr(self, 'preview_frame_idx', None)
+            if frame_idx is not None and self.pipeline_context.get('segments'):
+                for seg in self.pipeline_context['segments']:
+                    if seg.get('start_frame', 0) <= frame_idx <= seg.get('last_frame', 0):
+                        for box in seg.get('boxes', []):
+                            canvas_pts = []
+                            for p in box:
+                                canvas_pts.extend([off_x + (p[0] * scale), off_y + (p[1] * scale)])
+                            if canvas_pts:
+                                self.preview_canvas.create_polygon(
+                                    canvas_pts, outline="#22C55E", width=2,
+                                    fill="#000000", stipple="gray50" if sys.platform=="win32" else "",
+                                    tags="box_elements"
+                                )
+            return
+            
         # Map normalized self.preview_box to canvas coordinates
         x1, y1, x2, y2 = self.preview_box
         # Clip coordinates to [0, 1]
@@ -1949,8 +1982,45 @@ class App(ctk.CTk):
                 fill=COLORS["accent"], outline="white", tags=("box_elements", tag)
             )
 
+        # ─── Draw Subtitle Text Preview ───
+        if getattr(self, 'current_preview_index', None) is not None:
+            idx = self.current_preview_index
+            if idx < len(self.translation_data):
+                txt = self.translation_data[idx].get("translated", "")
+                if txt:
+                    # Render text on the canvas at the calculated \pos location
+                    # Map [center_x, y_pos] to canvas coordinates
+                    vw, vh = self.pipeline_context.get('video_width', 1920), self.pipeline_context.get('video_height', 1080)
+                    box_width = x2 - x1
+                    center_x_norm = x1 + (box_width / 2.0)
+                    
+                    canvas_tx = off_x + (center_x_norm * (canvas_w - 2 * off_x))
+                    canvas_ty = off_y + (y2 * (canvas_h - 2 * off_y))
+                    
+                    # Estimate canvas font size based on scaled video font size
+                    v_font_size = int((y2 - y1) * vh * 0.35)
+                    v_font_size = max(16, min(v_font_size, int(vh * 0.15)))
+                    canvas_font_size = int(v_font_size * scale)
+                    if canvas_font_size < 8: canvas_font_size = 8
+                    
+                    # Draw shadowed text
+                    self.preview_canvas.create_text(
+                        canvas_tx + 2, canvas_ty + 2, text=txt,
+                        fill="black", font=(FONT_FAMILY, canvas_font_size, "bold"),
+                        anchor="s", tags="box_elements", justify="center", width=(canvas_w * 0.8)
+                    )
+                    self.preview_canvas.create_text(
+                        canvas_tx, canvas_ty, text=txt,
+                        fill="white", font=(FONT_FAMILY, canvas_font_size, "bold"),
+                        anchor="s", tags="box_elements", justify="center", width=(canvas_w * 0.8)
+                    )
+
     def _on_canvas_hover(self, event):
         """Change cursor when hovering over handles."""
+        if not getattr(self, 'manual_inpaint_var', None) or not self.manual_inpaint_var.get():
+            self.preview_canvas.config(cursor="")
+            return
+            
         tags = self.preview_canvas.gettags(self.preview_canvas.find_closest(event.x, event.y))
         if any(t in ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'] for t in tags):
             self.preview_canvas.config(cursor="hand2")
@@ -1959,6 +2029,9 @@ class App(ctk.CTk):
 
     def _on_canvas_click(self, event):
         """Start resizing logic."""
+        if not getattr(self, 'manual_inpaint_var', None) or not self.manual_inpaint_var.get():
+            return
+            
         item = self.preview_canvas.find_closest(event.x, event.y)
         tags = self.preview_canvas.gettags(item)
         for t in ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w']:
@@ -1971,6 +2044,9 @@ class App(ctk.CTk):
 
     def _on_canvas_drag(self, event):
         """Resizing the box."""
+        if not getattr(self, 'manual_inpaint_var', None) or not self.manual_inpaint_var.get():
+            return
+            
         if not self.is_resizing or not self.active_handle:
             return
         
@@ -1999,8 +2075,6 @@ class App(ctk.CTk):
         """Finalize box coordinates."""
         self.is_resizing = False
         self.active_handle = None
-        # Apply adjustment to ALL segments (Default behavior as requested)
-        self._apply_preview_box_to_segments()
 
     def _srt_to_ass_with_box(self, srt_content, video_width, video_height):
         """Convert SRT to ASS format with proper PlayResX/PlayResY and center-aligned margins.
@@ -2011,22 +2085,18 @@ class App(ctk.CTk):
         """
         x1, y1, x2, y2 = self.preview_box
         
-        # Force the text bounding box to be perfectly symmetrical around the absolute center of the video.
-        # This ignores accidental left/right asymmetry when the user drags the inpainting box handles.
-        box_width = x2 - x1
-        symmetric_margin = max(0, int((1.0 - box_width) / 2.0 * video_width))
-        
-        margin_l = symmetric_margin
-        margin_r = symmetric_margin
+        # Use actual user margins based on box position
+        margin_l = max(0, int(x1 * video_width))
+        margin_r = max(0, int((1.0 - x2) * video_width))
         margin_v = max(0, int((1.0 - y2) * video_height))
         
         # Font size based on box height in video pixels
         box_h_px = (y2 - y1) * video_height
-        font_size = int(box_h_px * 0.45)  # 0.45 ratio for clean look with room for multi-line
-        font_size = max(16, min(font_size, int(video_height * 0.15)))  # Clamp to 15% screen height
+        font_size = int(box_h_px * 0.35)  # 0.35 ratio (smaller than 0.45) for standard look
+        font_size = max(18, min(font_size, int(video_height * 0.12)))  # Clamp to 12% screen height
         
-        # Hard anchor position explicitly to the DEAD CENTER of the screen
-        center_x = int(video_width / 2.0)
+        # Hard anchor position explicitly to the center of the user's box
+        center_x = int(((x1 + x2) / 2.0) * video_width)
         y_pos = int(y2 * video_height)
         
         # Build ASS header with correct coordinate system
