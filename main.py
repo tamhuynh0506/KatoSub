@@ -1616,37 +1616,18 @@ class App(ctk.CTk):
         if edited_srt is None:  # Cancelled
             return None
 
-        # Compute dynamic styles from preview_box (scaled to aspect ratio)
+        # Convert SRT to ASS with pixel-perfect centering from preview_box
         vw = self.pipeline_context.get('video_width', 1920)
         vh = self.pipeline_context.get('video_height', 1080)
-        aspect_ratio = vw / vh if vh > 0 else 1.0
         
-        # FFmpeg/libass defaults to a 288-height coordinate space when rendering SRT via force_style.
-        ASS_PLAYRES_Y = 288
-        ASS_PLAYRES_X = int(ASS_PLAYRES_Y * aspect_ratio)
-        
-        x1, y1, x2, y2 = self.preview_box
-        margin_v = int((1.0 - y2) * ASS_PLAYRES_Y)
-        margin_l = int(x1 * ASS_PLAYRES_X)
-        margin_r = int((1.0 - x2) * ASS_PLAYRES_X)
-        
-        if margin_v < 0: margin_v = 15
-        if margin_l < 0: margin_l = 0
-        if margin_r < 0: margin_r = 0
-        
-        box_h_ass = (y2 - y1) * ASS_PLAYRES_Y
-        font_size = int(box_h_ass * 0.60) # 0.60 allows for better padding / multi-line room
-        if font_size < 8: font_size = 8
-        if font_size > 36: font_size = 36 # Limit max size for professional look
-        
-        style_override = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV={margin_v},MarginL={margin_l},MarginR={margin_r}"
+        ass_content = self._srt_to_ass_with_box(edited_srt, vw, vh)
 
         # Phase 2: Inpainting + Rendering with edited subtitles
         self._log("   Phase 2: AI Inpainting + Subtitle Rendering")
         result = pipe.inpaint_and_render(
-            video_path, segments, edited_srt,
+            video_path, segments, ass_content,
             progress_callback=progress_cb, output_dir=output_dir,
-            cancel_event=self.cancel_event, style_override=style_override
+            cancel_event=self.cancel_event, style_override=None
         )
         return result
 
@@ -1700,37 +1681,18 @@ class App(ctk.CTk):
         if edited_srt is None:
             return None
 
-        # Compute dynamic styles from preview_box (scaled to aspect ratio)
+        # Convert SRT to ASS with pixel-perfect centering from preview_box
         vw = self.pipeline_context.get('video_width', 1920)
         vh = self.pipeline_context.get('video_height', 1080)
-        aspect_ratio = vw / vh if vh > 0 else 1.0
         
-        # FFmpeg/libass defaults to a 288-height coordinate space when rendering SRT via force_style.
-        ASS_PLAYRES_Y = 288
-        ASS_PLAYRES_X = int(ASS_PLAYRES_Y * aspect_ratio)
-        
-        x1, y1, x2, y2 = self.preview_box
-        margin_v = int((1.0 - y2) * ASS_PLAYRES_Y)
-        margin_l = int(x1 * ASS_PLAYRES_X)
-        margin_r = int((1.0 - x2) * ASS_PLAYRES_X)
-        
-        if margin_v < 0: margin_v = 15
-        if margin_l < 0: margin_l = 0
-        if margin_r < 0: margin_r = 0
-        
-        box_h_ass = (y2 - y1) * ASS_PLAYRES_Y
-        font_size = int(box_h_ass * 0.60) # 0.60 allows for better padding / multi-line room
-        if font_size < 8: font_size = 8
-        if font_size > 36: font_size = 36 # Limit max size for professional look
-        
-        style_override = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV={margin_v},MarginL={margin_l},MarginR={margin_r}"
+        ass_content = self._srt_to_ass_with_box(edited_srt, vw, vh)
 
         # Phase 2: Render subtitles onto video
         self._log("   Phase 2: Rendering subtitles onto video (Audio Mode)")
         result = render_subtitles(
-            video_path, edited_srt, progress_cb, 
+            video_path, ass_content, progress_cb, 
             output_dir=output_dir, cancel_event=self.cancel_event,
-            style_override=style_override
+            style_override=None
         )
         return result
 
@@ -2039,6 +2001,101 @@ class App(ctk.CTk):
         self.active_handle = None
         # Apply adjustment to ALL segments (Default behavior as requested)
         self._apply_preview_box_to_segments()
+
+    def _srt_to_ass_with_box(self, srt_content, video_width, video_height):
+        """Convert SRT to ASS format with proper PlayResX/PlayResY and center-aligned margins.
+        
+        By generating a full ASS script with PlayResX/PlayResY set to the actual video
+        resolution, we get pixel-perfect margin control. This avoids the libass default
+        384x288 coordinate space which causes centering issues with force_style on SRT.
+        """
+        x1, y1, x2, y2 = self.preview_box
+        
+        # Force the text bounding box to be perfectly symmetrical around the absolute center of the video.
+        # This ignores accidental left/right asymmetry when the user drags the inpainting box handles.
+        box_width = x2 - x1
+        symmetric_margin = max(0, int((1.0 - box_width) / 2.0 * video_width))
+        
+        margin_l = symmetric_margin
+        margin_r = symmetric_margin
+        margin_v = max(0, int((1.0 - y2) * video_height))
+        
+        # Font size based on box height in video pixels
+        box_h_px = (y2 - y1) * video_height
+        font_size = int(box_h_px * 0.45)  # 0.45 ratio for clean look with room for multi-line
+        font_size = max(16, min(font_size, int(video_height * 0.15)))  # Clamp to 15% screen height
+        
+        # Hard anchor position explicitly to the DEAD CENTER of the screen
+        center_x = int(video_width / 2.0)
+        y_pos = int(y2 * video_height)
+        
+        # Build ASS header with correct coordinate system
+        ass_header = (
+            "[Script Info]\n"
+            "ScriptType: v4.00+\n"
+            f"PlayResX: {video_width}\n"
+            f"PlayResY: {video_height}\n"
+            "WrapStyle: 0\n"
+            "ScaledBorderAndShadow: yes\n"
+            "\n"
+            "[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+            "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+            f"Style: Default,Arial,{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+            f"0,0,0,0,100,100,0,0,1,{max(1, int(font_size * 0.06))},1,"
+            f"2,{margin_l},{margin_r},{margin_v},1\n"
+            "\n"
+            "[Events]\n"
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        )
+        
+        # Parse SRT blocks and convert to ASS dialogue lines
+        dialogue_lines = []
+        blocks = re.split(r'\n\n+', srt_content.strip())
+        for block in blocks:
+            lines = block.strip().split('\n')
+            if len(lines) < 3:
+                continue
+            
+            # Line 0 = index, Line 1 = timestamp, Line 2+ = text
+            time_line = lines[1]
+            
+            # CRITICAL: strip() removes \r or trailing spaces that cause libass center alignment
+            # to skew left due to invisible right-side padding characters.
+            text = '\\N'.join(line.strip() for line in lines[2:])
+            
+            # Convert SRT timestamp (HH:MM:SS,mmm) to ASS (H:MM:SS.cc)
+            parts = time_line.split(' --> ')
+            if len(parts) != 2:
+                continue
+            
+            start_ass = self._srt_time_to_ass(parts[0].strip())
+            end_ass = self._srt_time_to_ass(parts[1].strip())
+            
+            if start_ass and end_ass:
+                # Use 0000 for MarginL/R/V in dialogue to use the style defaults strictly
+                # CRITICAL: Hardcode the absolute position at the center of the user's bounding box
+                # using the \pos parameter. This bypasses ALL internal left-bias padding bugs in libass fallback fonts.
+                dialogue_lines.append(
+                    f"Dialogue: 0,{start_ass},{end_ass},Default,,0000,0000,0000,,{{\\an2\\pos({center_x},{y_pos})}}{text}"
+                )
+        
+        return ass_header + '\n'.join(dialogue_lines) + '\n'
+    
+    def _srt_time_to_ass(self, srt_time):
+        """Convert SRT timestamp 'HH:MM:SS,mmm' to ASS timestamp 'H:MM:SS.cc'."""
+        try:
+            # Handle both comma and period separators
+            srt_time = srt_time.replace(',', '.')
+            # Parse HH:MM:SS.mmm
+            main, ms_str = srt_time.split('.')
+            h, m, s = main.split(':')
+            # ASS uses centiseconds (2 digits)
+            cs = int(ms_str[:3]) // 10
+            return f"{int(h)}:{int(m):02d}:{int(s):02d}.{cs:02d}"
+        except (ValueError, IndexError):
+            return None
 
     def _apply_preview_box_to_segments(self):
         """Translate the normalized preview_box into video coordinates for all segments."""
