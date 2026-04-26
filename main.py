@@ -268,9 +268,11 @@ class App(ctk.CTk):
         self.preview_frame_data = None # PIL image
         self.preview_canvas_id = None
         self.preview_rect_id = None
-        self.preview_box = [0.1, 0.7, 0.9, 0.9] # Default [x1, y1, x2, y2] normalized
+        self.preview_box = [0.1, 0.8, 0.9, 0.95] # Default [x1, y1, x2, y2] normalized
         self.active_handle = None # 'nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'
         self.is_resizing = False
+        self.current_preview_index = None # Tracking which subtitle index we are viewing
+        self.manual_inpaint_var = ctk.BooleanVar(value=False)
 
         # ── Layout: header + content + bottom bar ──
         self.grid_columnconfigure(0, weight=1)
@@ -499,8 +501,9 @@ class App(ctk.CTk):
         panel = ctk.CTkFrame(parent, fg_color=COLORS["panel"], corner_radius=12)
         panel.grid(row=0, column=2, rowspan=2, sticky="nsew", pady=(0, 0))
         panel.grid_columnconfigure(0, weight=1)
-        panel.grid_rowconfigure(1, weight=0) # Preview
-        panel.grid_rowconfigure(2, weight=1) # Editor
+        panel.grid_rowconfigure(0, weight=0) # Header
+        panel.grid_rowconfigure(1, weight=0, minsize=320) # Preview - Fixed height
+        panel.grid_rowconfigure(2, weight=1) # Editor - Stretches
 
         # Header bar
         header = ctk.CTkFrame(panel, fg_color=COLORS["panel_header"], corner_radius=8)
@@ -594,32 +597,32 @@ class App(ctk.CTk):
         # Column headers for source / translated
         col_header = ctk.CTkFrame(editor_container, fg_color=COLORS["panel_header"], corner_radius=6, height=30)
         col_header.grid(row=0, column=0, sticky="new", padx=8, pady=(2, 0))
-        col_header.grid_columnconfigure(0, weight=0, minsize=70)
-        col_header.grid_columnconfigure(1, weight=1)
-        col_header.grid_columnconfigure(2, weight=0, minsize=70)
-        col_header.grid_columnconfigure(3, weight=1)
+        col_header.grid_columnconfigure(0, weight=0, minsize=40)  # Index
+        col_header.grid_columnconfigure(1, weight=0, minsize=100) # Time
+        col_header.grid_columnconfigure(2, weight=1)             # Source Text
+        col_header.grid_columnconfigure(3, weight=2)             # Translated Text (Largest)
         col_header.grid_columnconfigure(4, weight=0, minsize=16) # Scrollbar offset
         col_header.grid_propagate(False)
 
         ctk.CTkLabel(
-            col_header, text="Time", font=(FONT_FAMILY, 10, "bold"),
-            text_color=COLORS["text_muted"],
-        ).grid(row=0, column=0, padx=(28, 4), pady=4, sticky="w")
+            col_header, text="#", font=(FONT_FAMILY, 10, "bold"),
+            text_color=COLORS["text_muted"], width=40
+        ).grid(row=0, column=0, padx=(4, 0), pady=4, sticky="w")
+
+        ctk.CTkLabel(
+            col_header, text="Timestamp", font=(FONT_FAMILY, 10, "bold"),
+            text_color=COLORS["text_muted"], width=100
+        ).grid(row=0, column=1, padx=(10, 0), pady=4, sticky="w")
 
         ctk.CTkLabel(
             col_header, text="Source Text", font=(FONT_FAMILY, 10, "bold"),
             text_color=COLORS["text_muted"],
-        ).grid(row=0, column=1, padx=(38, 4), pady=4, sticky="w")
-
-        ctk.CTkLabel(
-            col_header, text="Time", font=(FONT_FAMILY, 10, "bold"),
-            text_color=COLORS["text_muted"],
-        ).grid(row=0, column=2, padx=(36, 4), pady=4, sticky="w")
+        ).grid(row=0, column=2, padx=(10, 4), pady=4, sticky="w")
 
         ctk.CTkLabel(
             col_header, text="Translated Text", font=(FONT_FAMILY, 10, "bold"),
-            text_color=COLORS["text_muted"],
-        ).grid(row=0, column=4, padx=(36, 12), pady=4, sticky="w")
+            text_color=COLORS["text_primary"], # Highlighted
+        ).grid(row=0, column=3, padx=(10, 12), pady=4, sticky="w")
 
         # Scrollable editor rows
         self.editor_scroll = ctk.CTkScrollableFrame(
@@ -628,11 +631,10 @@ class App(ctk.CTk):
             scrollbar_button_hover_color=COLORS["accent"],
         )
         self.editor_scroll.grid(row=1, column=0, sticky="nsew", padx=8, pady=(32, 8))
-        self.editor_scroll.grid_columnconfigure(0, weight=0, minsize=70)
-        self.editor_scroll.grid_columnconfigure(1, weight=0, minsize=80)
-        self.editor_scroll.grid_columnconfigure(2, weight=1)
-        self.editor_scroll.grid_columnconfigure(3, weight=0, minsize=70)
-        self.editor_scroll.grid_columnconfigure(4, weight=1)
+        self.editor_scroll.grid_columnconfigure(0, weight=0, minsize=40)  # Index
+        self.editor_scroll.grid_columnconfigure(1, weight=0, minsize=100) # Time
+        self.editor_scroll.grid_columnconfigure(2, weight=1)             # Source
+        self.editor_scroll.grid_columnconfigure(3, weight=2)             # Translated
         editor_container.grid_rowconfigure(1, weight=1)
 
         # Show placeholder
@@ -751,43 +753,48 @@ class App(ctk.CTk):
             grid_row = i - start_idx
             row_bg = COLORS["bg_dark"] if i % 2 == 0 else COLORS["panel"]
 
-            # Source timestamp
+            # 0. Index
+            ctk.CTkLabel(
+                self.editor_scroll, text=str(i + 1),
+                font=(FONT_FAMILY, 10, "bold"), text_color=COLORS["text_muted"],
+                width=40,
+            ).grid(row=grid_row, column=0, padx=(4, 0), pady=4, sticky="w")
+
+            # 1. Timestamp (Consolas for alignment)
             ctk.CTkLabel(
                 self.editor_scroll, text=entry["timestamp_start"],
-                font=("Consolas", 10), text_color=COLORS["text_muted"],
-                width=70,
-            ).grid(row=grid_row, column=0, padx=(12, 4), pady=2, sticky="w")
+                font=("Consolas", 10), text_color=COLORS["text_secondary"],
+                width=100,
+            ).grid(row=grid_row, column=1, padx=(10, 0), pady=4, sticky="w")
 
-            # Source text (read-only)
+            # 2. Source text (Read-only, subtle border)
             src_entry = ctk.CTkEntry(
                 self.editor_scroll, font=(FONT_FAMILY, 11),
                 fg_color=row_bg, text_color=COLORS["text_secondary"],
-                border_width=0, state="disabled",
+                border_width=1, border_color=COLORS["card_hover"],
             )
-            src_entry.grid(row=grid_row, column=1, padx=(4, 4), pady=2, sticky="ew")
-            src_entry.configure(state="normal")
+            src_entry.grid(row=grid_row, column=2, padx=(10, 4), pady=4, sticky="ew")
             src_entry.insert(0, entry["source"])
             src_entry.configure(state="disabled")
 
-            # Translated timestamp
-            ctk.CTkLabel(
-                self.editor_scroll, text=entry["timestamp_start"],
-                font=("Consolas", 10), text_color=COLORS["text_muted"],
-                width=70,
-            ).grid(row=grid_row, column=2, padx=(4, 4), pady=2, sticky="w")
-
-            # Translated text (editable)
+            # 3. Translated text (Editable, accent border)
             trans_entry = ctk.CTkEntry(
-                self.editor_scroll, font=(FONT_FAMILY, 11),
+                self.editor_scroll, font=(FONT_FAMILY, 11, "bold"),
                 fg_color=row_bg, text_color=COLORS["text_primary"],
                 border_width=1, border_color=COLORS["border"],
             )
-            trans_entry.grid(row=grid_row, column=3, padx=(4, 12), pady=2, sticky="ew")
+            trans_entry.grid(row=grid_row, column=3, padx=(10, 12), pady=4, sticky="ew")
             trans_entry.insert(0, entry["translated"])
 
-            # Bind edit tracking and preview jumping
+            # Highlight border on focus
+            trans_entry.bind("<FocusIn>", lambda e: e.widget.configure(border_color=COLORS["accent"]))
+            trans_entry.bind("<FocusOut>", lambda e, _i=i: [
+                e.widget.configure(border_color=COLORS["border"]),
+                self._on_translation_edit(_i, e.widget.get())
+            ])
+
+            # Bind row selection for preview jumping
             idx = i
-            trans_entry.bind("<FocusOut>", lambda e, _i=idx: self._on_translation_edit(_i, e.widget.get()))
             trans_entry.bind("<Button-1>", lambda e, _i=idx: self._on_row_click(_i))
             src_entry.bind("<Button-1>", lambda e, _i=idx: self._on_row_click(_i))
 
@@ -1025,7 +1032,7 @@ class App(ctk.CTk):
         self.pipeline_mode_var = ctk.StringVar(value="Hardcoded Subs (OCR)")
         ctk.CTkOptionMenu(
             type_frame, variable=self.pipeline_mode_var,
-            values=["Hardcoded Subs (OCR)", "Audio Only (Whisper)", "Replace Subs (Full)", "Watermark Removal"],
+            values=["Hardcoded Subs (OCR)", "Audio Only (Whisper)", "Watermark Removal"],
             fg_color=COLORS["bg_dark"], button_color=COLORS["accent"],
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["panel"],
@@ -1134,13 +1141,24 @@ class App(ctk.CTk):
             font=(FONT_FAMILY, 11),
         )
         self.whisper_menu.grid(row=1, column=0, sticky="ew", padx=4)
+
+        # Row 4: Manual Inpaint Toggle
+        manual_frame = ctk.CTkFrame(settings_container, fg_color="transparent")
+        manual_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(4, 8), padx=4)
+        
+        self.manual_inpaint_checkbox = ctk.CTkCheckBox(
+            manual_frame, text="Manual Inpaint (Pause for Review)", variable=self.manual_inpaint_var,
+            font=(FONT_FAMILY, 11, "bold"), fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            command=self._draw_box
+        )
+        self.manual_inpaint_checkbox.pack(side="left", padx=4)
         self.whisper_frame.grid_remove() # hide by default
 
     def _on_pipeline_mode_change(self, value):
         """Show/hide Whisper model selector based on pipeline mode."""
         self.whisper_frame.grid_remove()
 
-        if value in ["Audio Only (Whisper)", "Replace Subs (Full)"]:
+        if value == "Audio Only (Whisper)":
             self.whisper_frame.grid()
 
     # ─── Log Panels (dual split) ─────────────────────────────────────────
@@ -1309,6 +1327,7 @@ class App(ctk.CTk):
         self.cancel_event.clear()
         self.start_btn.configure(state="disabled")
         self.cancel_btn.configure(state="normal")
+        self.manual_inpaint_checkbox.configure(state="disabled")
         self.progress_bar.set(0)
         self._log_clear()
         self._clear_translation_editor()
@@ -1408,7 +1427,6 @@ class App(ctk.CTk):
         pipeline_mode = self.pipeline_mode_var.get()
         whisper_model = self.whisper_model_var.get()
         is_audio_mode = (pipeline_mode == "Audio Only (Whisper)")
-        is_replace_mode = (pipeline_mode == "Replace Subs (Full)")
         is_watermark_mode = (pipeline_mode == "Watermark Removal")
 
         # Get encoding settings
@@ -1425,8 +1443,6 @@ class App(ctk.CTk):
             self._log(f"📐  Resolution: {resolution_key} | Quality: {quality_key}")
             if is_watermark_mode:
                 self._log("🚀  Engine: AI Watermark Removal (LaMa Inpainting + NVENC)")
-            elif is_replace_mode:
-                self._log("🚀  Engine: Replace Subs — Inpaint + Whisper (medium)")
             elif is_audio_mode:
                 self._log(f"🚀  Engine: Audio Transcription (Faster-Whisper Turbo {whisper_model})")
             else:
@@ -1461,7 +1477,7 @@ class App(ctk.CTk):
                     )
 
                 # ─────────── V4: Hardcoded Subs (OCR) ─────────────────
-                elif not is_audio_mode and not is_replace_mode:
+                elif not is_audio_mode:
                     result = self._run_v4_split(
                         video_path, target_code, translator_model,
                         progress_cb, output_dir, idx, total_videos
@@ -1472,13 +1488,6 @@ class App(ctk.CTk):
                     result = self._run_audio_split(
                         video_path, target_code, translator_model,
                         whisper_model, progress_cb, output_dir, idx, total_videos
-                    )
-
-                # ─────────── Replace Subs (Full) ──────────────────────
-                elif is_replace_mode:
-                    result = self._run_replace_subs_split(
-                        video_path, target_code, translator_model,
-                        progress_cb, output_dir, idx, total_videos
                     )
 
                 if result:
@@ -1510,6 +1519,7 @@ class App(ctk.CTk):
             self.is_processing = False
             self.after(0, lambda: self.start_btn.configure(state="normal"))
             self.after(0, lambda: self.cancel_btn.configure(state="disabled"))
+            self.after(0, lambda: self.manual_inpaint_checkbox.configure(state="normal"))
             self.after(0, self._hide_continue_button)
 
     # ─── Split-Phase Pipeline Methods ─────────────────────────────────────
@@ -1521,13 +1531,12 @@ class App(ctk.CTk):
         """
         self.continue_event.clear()
 
-        # Fill the editor and preview on the main thread
+        # Fill the editor and preview on the main thread (Always do this so user sees something)
         self.after(0, lambda s=srt_source, t=srt_translated: self._load_translation_data(s, t))
         
         # Initialize preview
         if self.pipeline_context.get('segments'):
             first_seg = self.pipeline_context['segments'][0]
-            # Initialize preview_box from first segment's bbox
             if first_seg.get('boxes'):
                 box = first_seg['boxes'][0]
                 vw, vh = self.pipeline_context['video_width'], self.pipeline_context['video_height']
@@ -1537,14 +1546,17 @@ class App(ctk.CTk):
                     max(p[0] for p in box) / vw,
                     max(p[1] for p in box) / vh
                 ]
-            
             self.after(100, lambda: self._render_preview_frame(first_seg.get('start_frame', 0)))
-        elif self.translation_data:
-            # Fallback for modes without bounding box segments (like Audio Only)
-            self.preview_box = [0.1, 0.7, 0.9, 0.9] # Default box
-            time_str = self.translation_data[0].get("timestamp_start", "")
-            frame_idx = self._time_to_frame(time_str)
-            self.after(100, lambda: self._render_preview_frame(frame_idx))
+        elif srt_translated:
+            first_blocks = self._parse_srt(srt_translated)
+            if first_blocks:
+                time_str = first_blocks[0].get("time_start", "")
+                frame_idx = self._time_to_frame(time_str)
+                self.after(100, lambda: self._render_preview_frame(frame_idx))
+
+        # Check for auto-continue ONLY after triggering UI population
+        if not self.manual_inpaint_var.get():
+            return srt_translated
 
         self.after(200, self._show_continue_button)
 
@@ -1617,28 +1629,22 @@ class App(ctk.CTk):
         if edited_srt is None:  # Cancelled
             return None
 
-        # Compute dynamic styles from preview_box
-        x1, y1, x2, y2 = self.preview_box
+        # Custom Inpainting Region Check
+        if getattr(self, 'manual_inpaint_var', None) and self.manual_inpaint_var.get():
+            self._apply_preview_box_to_segments()
+
+        # Convert SRT to ASS with pixel-perfect centering from preview_box
+        vw = self.pipeline_context.get('video_width', 1920)
+        vh = self.pipeline_context.get('video_height', 1080)
         
-        # FFmpeg/libass defaults to a 288-height coordinate space when rendering SRT via force_style.
-        # We must scale our normalized coordinates to 288, NOT the absolute video height.
-        ASS_PLAYRES_Y = 288
-        
-        margin_v = int((1.0 - y2) * ASS_PLAYRES_Y)
-        if margin_v < 0: margin_v = 15
-        
-        box_h_ass = (y2 - y1) * ASS_PLAYRES_Y
-        font_size = int(box_h_ass * 0.75)
-        if font_size < 12: font_size = 22
-        
-        style_override = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV={margin_v}"
+        ass_content = self._srt_to_ass_with_box(edited_srt, vw, vh)
 
         # Phase 2: Inpainting + Rendering with edited subtitles
         self._log("   Phase 2: AI Inpainting + Subtitle Rendering")
         result = pipe.inpaint_and_render(
-            video_path, segments, edited_srt,
+            video_path, segments, ass_content,
             progress_callback=progress_cb, output_dir=output_dir,
-            cancel_event=self.cancel_event, style_override=style_override
+            cancel_event=self.cancel_event, style_override=None
         )
         return result
 
@@ -1692,124 +1698,21 @@ class App(ctk.CTk):
         if edited_srt is None:
             return None
 
-        # Compute dynamic styles from preview_box
-        x1, y1, x2, y2 = self.preview_box
+        # Convert SRT to ASS with pixel-perfect centering from preview_box
+        vw = self.pipeline_context.get('video_width', 1920)
+        vh = self.pipeline_context.get('video_height', 1080)
         
-        # FFmpeg/libass defaults to a 288-height coordinate space when rendering SRT via force_style.
-        ASS_PLAYRES_Y = 288
-        
-        margin_v = int((1.0 - y2) * ASS_PLAYRES_Y)
-        if margin_v < 0: margin_v = 15
-        
-        box_h_ass = (y2 - y1) * ASS_PLAYRES_Y
-        font_size = int(box_h_ass * 0.75)
-        if font_size < 12: font_size = 22
-        
-        style_override = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,Outline=1.2,OutlineColour=&H00000000,BorderStyle=1,Shadow=1,Alignment=2,MarginV={margin_v}"
+        ass_content = self._srt_to_ass_with_box(edited_srt, vw, vh)
 
         # Phase 2: Render subtitles onto video
         self._log("   Phase 2: Rendering subtitles onto video (Audio Mode)")
         result = render_subtitles(
-            video_path, edited_srt, progress_cb, 
+            video_path, ass_content, progress_cb, 
             output_dir=output_dir, cancel_event=self.cancel_event,
-            style_override=style_override
+            style_override=None
         )
         return result
 
-    def _run_replace_subs_split(self, video_path, target_code, translator_model,
-                                progress_cb, output_dir, idx, total_videos):
-        """Replace Subs pipeline split into:
-        OCR+Inpaint old → Whisper+Translate → User Review → Render new."""
-        # Phase 1a: OCR detect old subtitles
-        self._log("   Phase 1: Detecting and removing old subtitles")
-        pipe = SelectiveInpaintPipe()
-        ocr_history, fps = pipe.extract_metadata(video_path, progress_cb)
-
-        segments = get_stabilized_segments(ocr_history, fps)
-        
-        cap = cv2.VideoCapture(video_path)
-        vw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        vh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        cap.release()
-
-        self.pipeline_context.update({
-            'video_path': video_path,
-            'segments': segments,
-            'video_width': vw,
-            'video_height': vh
-        })
-        self._log(f"   OCR detected {len(segments)} subtitle segments")
-
-        if not segments:
-            self._log("   ⚠ No old subs found — falling back to audio-only flow")
-            return self._run_audio_split(
-                video_path, target_code, translator_model,
-                "medium", progress_cb, output_dir, idx, total_videos
-            )
-
-        # Phase 1b: Inpaint (remove old subs) — no new subs yet
-        clean_video = pipe.inpaint_and_render(
-            video_path, segments, translated_srt="",
-            progress_callback=progress_cb,
-        )
-
-        # Free GPU memory
-        del pipe
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-        except Exception:
-            pass
-
-        if not clean_video or not os.path.exists(clean_video):
-            self._log("   ❌ Inpainting failed")
-            return None
-
-        # Phase 1c: Extract audio + Whisper transcribe
-        self._log("   Extracting audio and transcribing...")
-        audio_path = extract_audio(video_path, progress_cb)
-        if not audio_path:
-            self._log("   ❌ Audio extraction failed")
-            return clean_video
-
-        srt_content, detected_lang = transcribe_audio(audio_path, "medium", progress_cb)
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
-
-        if not srt_content or not srt_content.strip():
-            self._log("   ⚠ No speech detected — returning clean video")
-            return clean_video
-
-        # Phase 1d: Translate
-        self._log(f"   Translating to {target_code}...")
-        translator = AITranslator(model=translator_model)
-        translated_srt = translator.translate_srt_content(
-            srt_content, target_code, progress_callback=progress_cb
-        )
-        translator.unload()
-
-        if not translated_srt or not translated_srt.strip():
-            translated_srt = srt_content
-
-        # ── PAUSE: User review in Translation Editor ──
-        edited_srt = self._wait_for_user_review(srt_content, translated_srt)
-        if edited_srt is None:
-            return clean_video
-
-        # Phase 2: Render new subs onto clean video
-        self._log("   Phase 2: Rendering new subtitles onto clean video")
-        result = render_subtitles(clean_video, edited_srt, progress_cb, output_dir=output_dir, cancel_event=self.cancel_event)
-
-        # Clean up intermediate video
-        if result and os.path.exists(result) and result != clean_video:
-            try:
-                os.remove(clean_video)
-            except OSError:
-                pass
-
-        return result
 
     def _update_queue_status(self, index, status):
         """Update a specific file's status badge in the queue."""
@@ -1934,6 +1837,7 @@ class App(ctk.CTk):
             time_str = self.translation_data[index].get("timestamp_start", "")
             frame_idx = self._time_to_frame(time_str)
 
+        self.current_preview_index = index
         self.after(0, lambda f=frame_idx: self._render_preview_frame(f))
 
     def _extract_preview_frame(self, video_path, frame_idx):
@@ -1968,6 +1872,7 @@ class App(ctk.CTk):
     def _render_preview_frame(self, frame_idx):
         """Render a video frame onto the canvas and draw the resizable box."""
         self._log(f"   [Debug] _render_preview_frame called for frame {frame_idx}")
+        self.preview_frame_idx = frame_idx
         
         if not self.pipeline_context.get('video_path'):
             self._log("   [Debug] No video_path in pipeline_context")
@@ -1991,9 +1896,11 @@ class App(ctk.CTk):
         canvas_w = self.preview_canvas.winfo_width()
         canvas_h = self.preview_canvas.winfo_height()
         
-        self._log(f"   [Debug] pre-fallback Canvas dimensions: {canvas_w}x{canvas_h}")
+        self._log(f"   [Debug] Preview Canvas dimensions: {canvas_w}x{canvas_h}")
         
-        if canvas_w < 10: canvas_w = 400 # Fallback
+        if canvas_w < 10: 
+            self._log("   [Debug] Canvas too small, using fallback 400x320")
+            canvas_w = 400 # Fallback
         if canvas_h < 10: canvas_h = 320
 
         img_w, img_h = img.size
@@ -2019,13 +1926,13 @@ class App(ctk.CTk):
         self._draw_box()
 
     def _draw_box(self):
-        """Draw the red resizable box on the canvas."""
+        """Draw the red resizable box on the canvas or auto-inpainted OCR boxes."""
         self.preview_canvas.delete("box_elements")
         
         canvas_w = self.preview_canvas.winfo_width()
         canvas_h = self.preview_canvas.winfo_height()
-        off_x, off_y = self.preview_img_offset
-        scale = self.preview_img_scale
+        off_x, off_y = getattr(self, 'preview_img_offset', (0,0))
+        scale = getattr(self, 'preview_img_scale', 1.0)
         
         # Map normalized self.preview_box to canvas coordinates
         x1, y1, x2, y2 = self.preview_box
@@ -2038,6 +1945,60 @@ class App(ctk.CTk):
         vx2 = off_x + (x2 * (canvas_w - 2 * off_x))
         vy2 = off_y + (y2 * (canvas_h - 2 * off_y))
         
+        # ─── Draw Subtitle Text Preview (Always Visible) ───
+        current_idx = getattr(self, 'current_preview_index', None)
+        txt = ""
+        if current_idx is not None and current_idx < len(self.translation_data):
+            txt = self.translation_data[current_idx].get("translated", "")
+        else:
+            txt = "This is the subtitle." # Mock text for placement visualization
+
+        if txt:
+            # Map [center_x, y_pos] to canvas coordinates
+            vw, vh = self.pipeline_context.get('video_width', 1920), self.pipeline_context.get('video_height', 1080)
+            box_width = x2 - x1
+            center_x_norm = x1 + (box_width / 2.0)
+            
+            canvas_tx = off_x + (center_x_norm * (canvas_w - 2 * off_x))
+            canvas_ty = off_y + (y2 * (canvas_h - 2 * off_y))
+            
+            # Estimate canvas font size based on scaled video font size
+            v_font_size = int((y2 - y1) * vh * 0.35)
+            v_font_size = max(16, min(v_font_size, int(vh * 0.15)))
+            canvas_font_size = int(v_font_size * scale)
+            if canvas_font_size < 8: canvas_font_size = 8
+            
+            # Draw shadowed text
+            self.preview_canvas.create_text(
+                canvas_tx + 2, canvas_ty + 2, text=txt,
+                fill="black", font=(FONT_FAMILY, canvas_font_size, "bold"),
+                anchor="s", tags="box_elements", justify="center", width=(canvas_w * 0.8)
+            )
+            self.preview_canvas.create_text(
+                canvas_tx, canvas_ty, text=txt,
+                fill="white", font=(FONT_FAMILY, canvas_font_size, "bold"),
+                anchor="s", tags="box_elements", justify="center", width=(canvas_w * 0.8)
+            )
+
+        if not getattr(self, 'manual_inpaint_var', None) or not self.manual_inpaint_var.get():
+            # View-Only Mode: Overlay AI OCR Detected Bounds
+            frame_idx = getattr(self, 'preview_frame_idx', None)
+            if frame_idx is not None and self.pipeline_context.get('segments'):
+                for seg in self.pipeline_context['segments']:
+                    if seg.get('start_frame', 0) <= frame_idx <= seg.get('last_frame', 0):
+                        for box in seg.get('boxes', []):
+                            canvas_pts = []
+                            for p in box:
+                                canvas_pts.extend([off_x + (p[0] * scale), off_y + (p[1] * scale)])
+                            if canvas_pts:
+                                self.preview_canvas.create_polygon(
+                                    canvas_pts, outline="#22C55E", width=2,
+                                    fill="#000000", stipple="gray50" if sys.platform=="win32" else "",
+                                    tags="box_elements"
+                                )
+            return
+            
+        # Draw Resizable Box & Handles (Manual Mode Only)
         # Main rectangle
         self.preview_rect_id = self.preview_canvas.create_rectangle(
             vx1, vy1, vx2, vy2, outline="#EF4444", width=3, dash=(4, 4), tags="box_elements"
@@ -2063,6 +2024,10 @@ class App(ctk.CTk):
 
     def _on_canvas_hover(self, event):
         """Change cursor when hovering over handles."""
+        if not getattr(self, 'manual_inpaint_var', None) or not self.manual_inpaint_var.get():
+            self.preview_canvas.config(cursor="")
+            return
+            
         tags = self.preview_canvas.gettags(self.preview_canvas.find_closest(event.x, event.y))
         if any(t in ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'] for t in tags):
             self.preview_canvas.config(cursor="hand2")
@@ -2071,6 +2036,9 @@ class App(ctk.CTk):
 
     def _on_canvas_click(self, event):
         """Start resizing logic."""
+        if not getattr(self, 'manual_inpaint_var', None) or not self.manual_inpaint_var.get():
+            return
+            
         item = self.preview_canvas.find_closest(event.x, event.y)
         tags = self.preview_canvas.gettags(item)
         for t in ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w']:
@@ -2083,6 +2051,9 @@ class App(ctk.CTk):
 
     def _on_canvas_drag(self, event):
         """Resizing the box."""
+        if not getattr(self, 'manual_inpaint_var', None) or not self.manual_inpaint_var.get():
+            return
+            
         if not self.is_resizing or not self.active_handle:
             return
         
@@ -2111,8 +2082,97 @@ class App(ctk.CTk):
         """Finalize box coordinates."""
         self.is_resizing = False
         self.active_handle = None
-        # Apply adjustment to ALL segments (Default behavior as requested)
-        self._apply_preview_box_to_segments()
+
+    def _srt_to_ass_with_box(self, srt_content, video_width, video_height):
+        """Convert SRT to ASS format with proper PlayResX/PlayResY and center-aligned margins.
+        
+        By generating a full ASS script with PlayResX/PlayResY set to the actual video
+        resolution, we get pixel-perfect margin control. This avoids the libass default
+        384x288 coordinate space which causes centering issues with force_style on SRT.
+        """
+        x1, y1, x2, y2 = self.preview_box
+        
+        # Use actual user margins based on box position
+        margin_l = max(0, int(x1 * video_width))
+        margin_r = max(0, int((1.0 - x2) * video_width))
+        margin_v = max(0, int((1.0 - y2) * video_height))
+        
+        # Font size based on box height in video pixels
+        box_h_px = (y2 - y1) * video_height
+        font_size = int(box_h_px * 0.35)  # 0.35 ratio (smaller than 0.45) for standard look
+        font_size = max(18, min(font_size, int(video_height * 0.12)))  # Clamp to 12% screen height
+        
+        # Hard anchor position explicitly to the center of the user's box
+        center_x = int(((x1 + x2) / 2.0) * video_width)
+        y_pos = int(y2 * video_height)
+        
+        # Build ASS header with correct coordinate system
+        ass_header = (
+            "[Script Info]\n"
+            "ScriptType: v4.00+\n"
+            f"PlayResX: {video_width}\n"
+            f"PlayResY: {video_height}\n"
+            "WrapStyle: 0\n"
+            "ScaledBorderAndShadow: yes\n"
+            "\n"
+            "[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+            "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+            f"Style: Default,Arial,{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+            f"0,0,0,0,100,100,0,0,1,{max(1, int(font_size * 0.06))},1,"
+            f"2,{margin_l},{margin_r},{margin_v},1\n"
+            "\n"
+            "[Events]\n"
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        )
+        
+        # Parse SRT blocks and convert to ASS dialogue lines
+        dialogue_lines = []
+        blocks = re.split(r'\n\n+', srt_content.strip())
+        for block in blocks:
+            lines = block.strip().split('\n')
+            if len(lines) < 3:
+                continue
+            
+            # Line 0 = index, Line 1 = timestamp, Line 2+ = text
+            time_line = lines[1]
+            
+            # CRITICAL: strip() removes \r or trailing spaces that cause libass center alignment
+            # to skew left due to invisible right-side padding characters.
+            text = '\\N'.join(line.strip() for line in lines[2:])
+            
+            # Convert SRT timestamp (HH:MM:SS,mmm) to ASS (H:MM:SS.cc)
+            parts = time_line.split(' --> ')
+            if len(parts) != 2:
+                continue
+            
+            start_ass = self._srt_time_to_ass(parts[0].strip())
+            end_ass = self._srt_time_to_ass(parts[1].strip())
+            
+            if start_ass and end_ass:
+                # Use 0000 for MarginL/R/V in dialogue to use the style defaults strictly
+                # CRITICAL: Hardcode the absolute position at the center of the user's bounding box
+                # using the \pos parameter. This bypasses ALL internal left-bias padding bugs in libass fallback fonts.
+                dialogue_lines.append(
+                    f"Dialogue: 0,{start_ass},{end_ass},Default,,0000,0000,0000,,{{\\an2\\pos({center_x},{y_pos})}}{text}"
+                )
+        
+        return ass_header + '\n'.join(dialogue_lines) + '\n'
+    
+    def _srt_time_to_ass(self, srt_time):
+        """Convert SRT timestamp 'HH:MM:SS,mmm' to ASS timestamp 'H:MM:SS.cc'."""
+        try:
+            # Handle both comma and period separators
+            srt_time = srt_time.replace(',', '.')
+            # Parse HH:MM:SS.mmm
+            main, ms_str = srt_time.split('.')
+            h, m, s = main.split(':')
+            # ASS uses centiseconds (2 digits)
+            cs = int(ms_str[:3]) // 10
+            return f"{int(h)}:{int(m):02d}:{int(s):02d}.{cs:02d}"
+        except (ValueError, IndexError):
+            return None
 
     def _apply_preview_box_to_segments(self):
         """Translate the normalized preview_box into video coordinates for all segments."""
